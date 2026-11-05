@@ -180,7 +180,7 @@ class ResultsPanel(QFrame):
         vh.setDefaultSectionSize(24)
 
         self.empty_label = QLabel("Run a query to see results here.\n\nCtrl+Enter to execute · "
-                                  "View → Load Demo Dataset to preview the grid")
+                                  "View → Load Demo Grid to preview scrolling")
         self.empty_label.setObjectName("Muted")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
 

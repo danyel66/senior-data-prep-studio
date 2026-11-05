@@ -116,6 +116,17 @@ QComboBox QAbstractItemView {{ background: {C.surface_alt}; border: 1px solid {C
 QPlainTextEdit, QTextBrowser {{ background: {C.surface}; border: none; color: {C.text};
                                 selection-background-color: {C.selection}; }}
 
+/* ---- Radio buttons / check boxes ---- */
+QRadioButton, QCheckBox {{ spacing: 8px; }}
+QRadioButton::indicator, QCheckBox::indicator {{ width: 14px; height: 14px; border: 1px solid {C.text_muted};
+                                                 background: {C.surface_alt}; }}
+QRadioButton::indicator {{ border-radius: 8px; }}
+QCheckBox::indicator {{ border-radius: 3px; }}
+QRadioButton::indicator:hover, QCheckBox::indicator:hover {{ border-color: {C.accent}; }}
+QRadioButton::indicator:checked {{ background: #ffffff; border: 4px solid {C.accent}; width: 8px; height: 8px; }}
+QCheckBox::indicator:checked {{ background: {C.accent}; border-color: {C.accent}; }}
+QRadioButton::indicator:disabled, QCheckBox::indicator:disabled {{ border-color: {C.border}; background: {C.surface}; }}
+
 /* ---- Tabs ---- */
 QTabWidget::pane {{ border: none; }}
 QTabBar::tab {{ background: transparent; color: {C.text_muted}; padding: 6px 14px; border: none;
