@@ -1,0 +1,15 @@
+[project]
+name = "senior-data-prep-studio"
+version = "0.1.0"
+description = "Desktop studio for senior-level SQL / Python / Analytics Engineering practice."
+requires-python = ">=3.11"
+dependencies = ["PyQt6>=6.6", "psutil>=5.9"]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+sdps = "sdps.app:main"
+
+[tool.setuptools.packages.find]
+include = ["sdps*"]
