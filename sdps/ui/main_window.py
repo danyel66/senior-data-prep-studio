@@ -16,8 +16,10 @@ from PyQt6.QtWidgets import QLabel, QMainWindow, QMessageBox, QProgressBar, QSpl
     QWidget
 
 from .. import APP_NAME, ORG_NAME, __version__
+from ..ai import AICancelled, AIConfig, AIError, Challenge, ChallengeGenerator, ChallengeStore, \
+    GenerationResult, OllamaProvider, claude_credentials_hint
 from ..db import ConnectionManager, ConnectionStatus, DatabaseConfig, TableInfo
-from .dialogs import DatabaseSettingsDialog, SeedDialog
+from .dialogs import AISettingsDialog, DatabaseSettingsDialog, SeedDialog
 from .theme import C
 from .widgets import EditorPanel, PromptPanel, ResultsPanel, TelemetryPanel
 from .widgets.results_panel import SyntheticRows
@@ -41,6 +43,9 @@ class MainWindow(QMainWindow):
         self._db_busy = False
         self._seed_dialog: SeedDialog | None = None
         self.tables: list[TableInfo] = []
+        self.ai_config = AIConfig.load()
+        self.challenges = ChallengeStore()
+        self._generator: ChallengeGenerator | None = None
 
         self.schema_browser = SchemaBrowser()
         self.prompt_panel = PromptPanel()
@@ -55,6 +60,9 @@ class MainWindow(QMainWindow):
         self._restore_state()
 
         self.telemetry_panel.append_log(f"{APP_NAME} v{__version__} started", "OK")
+        self._apply_ai_config()
+        if recent := self.challenges.all():
+            self.prompt_panel.show_challenge(recent[0])
         if auto_connect:
             QTimer.singleShot(0, self.connect_database)
 
@@ -98,8 +106,13 @@ class MainWindow(QMainWindow):
             return a
 
         self.act_run = action("Run", self.editor_panel._emit_run, "F5", "Execute the current script")
-        self.act_new_challenge = action("New Challenge", self.prompt_panel.generate_button.click,
-                                        "Ctrl+G", "Generate a new AI challenge")
+        self.act_new_challenge = action("New Challenge", self._new_challenge_shortcut, "Ctrl+G",
+                                        "Generate a new AI challenge")
+        self.act_hint = action("Reveal Next Hint", self.prompt_panel.next_hint, "Ctrl+Shift+H")
+        self.act_solution = action("Show Solution", self.prompt_panel.show_solution, "Ctrl+Shift+S")
+        self.act_insert_solution = action("Insert Solution into Editor", self._insert_solution)
+        self.act_ai_settings = action("AI Settings…", self.open_ai_settings, None,
+                                      "Choose Claude or Ollama and set your API key")
         self.act_demo = action("Load Demo Grid (1M rows)", self._load_demo_dataset, "Ctrl+D",
                                "Fill the grid with 1,000,000 synthetic rows to test virtualisation")
         self.act_clear = action("Clear Results", self._clear_results, "Ctrl+L")
@@ -125,8 +138,14 @@ class MainWindow(QMainWindow):
         m_db.addActions([self.act_db_settings, self.act_seed])
         m_db.addSeparator()
         m_db.addActions([self.act_refresh_schema, self.act_reconnect, self.act_disconnect])
+        m_challenge = mb.addMenu("&Challenge")
+        m_challenge.addActions([self.act_new_challenge, self.act_hint, self.act_solution, self.act_insert_solution])
+        self.recent_menu = m_challenge.addMenu("Recent Challenges")
+        self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
+        m_challenge.addSeparator()
+        m_challenge.addAction(self.act_ai_settings)
         m_run = mb.addMenu("&Run")
-        m_run.addActions([self.act_run, self.act_new_challenge])
+        m_run.addActions([self.act_run])
         m_view = mb.addMenu("&View")
         m_view.addActions([self.act_toggle_schema, self.act_demo, self.act_clear])
         m_view.addSeparator()
@@ -144,15 +163,15 @@ class MainWindow(QMainWindow):
         tb.addSeparator()
         self.act_db_settings_tb = QAction("Database…", self, triggered=self.open_database_settings)
         self.act_seed_tb = QAction("Generate Data…", self, triggered=self.open_seed_dialog)
-        tb.addActions([self.act_db_settings_tb, self.act_seed_tb, self.act_clear])
+        self.act_ai_settings_tb = QAction("AI Settings…", self, triggered=self.open_ai_settings)
+        tb.addActions([self.act_db_settings_tb, self.act_seed_tb, self.act_ai_settings_tb, self.act_clear])
         self.addToolBar(tb)
 
     def _build_status_bar(self) -> None:
         sb = self.statusBar()
         self.db_status = QLabel()
         self.db_status.setStyleSheet("padding: 0 8px;")
-        self.ai_status = QLabel("●  AI: not configured")
-        self.ai_status.setStyleSheet(f"color: {C.text_muted}; padding: 0 8px;")
+        self.ai_status = QLabel()
         self.progress = QProgressBar()
         self.progress.setFixedWidth(160)
         self.progress.setRange(0, 0)        # indeterminate
@@ -169,7 +188,10 @@ class MainWindow(QMainWindow):
         self.editor_panel.cancel_requested.connect(self._on_cancel_requested)
         self.editor_panel.language_changed.connect(
             lambda lang: self.statusBar().showMessage(f"Language: {lang}", 2_000))
-        self.prompt_panel.generate_requested.connect(self._on_generate_requested)
+        self.prompt_panel.generate_requested.connect(self.generate_challenge)
+        self.prompt_panel.cancel_requested.connect(self.cancel_challenge)
+        self.prompt_panel.insert_solution_requested.connect(self._insert_solution)
+        self.prompt_panel.settings_requested.connect(self.open_ai_settings)
         self.schema_browser.insert_requested.connect(self._insert_into_editor)
         self.schema_browser.refresh_requested.connect(self.refresh_schema)
         self.schema_browser.seed_requested.connect(self.open_seed_dialog)
@@ -291,6 +313,134 @@ class MainWindow(QMainWindow):
         self.telemetry_panel.append_log(f"AdventureWorks generated: {total:,} rows in {len(counts)} tables", "OK")
         self.refresh_schema()
 
+    # ---- AI challenges ----------------------------------------------------------------------
+    def _set_ai_indicator(self, text: str, color: str, tooltip: str = "") -> None:
+        self.ai_status.setText(f"●  AI: {text}")
+        self.ai_status.setStyleSheet(f"color: {color}; padding: 0 8px;")
+        self.ai_status.setToolTip(tooltip)
+        self.ai_status.setMinimumWidth(self.ai_status.sizeHint().width())
+
+    def _apply_ai_config(self) -> None:
+        cfg = self.ai_config
+        self.prompt_panel.set_provider_label(cfg.describe())
+        if cfg.provider == "claude":
+            source = claude_credentials_hint()
+            if source:
+                self._set_ai_indicator(cfg.describe(), C.success, f"Credentials: {source}")
+            else:
+                self._set_ai_indicator(f"{cfg.describe()} · no API key", C.warning, "Challenge → AI Settings…")
+            return
+        self._set_ai_indicator(f"{cfg.describe()} · checking…", C.text_muted)
+        provider = OllamaProvider(cfg)
+
+        def ok(models: list[str]) -> None:
+            if cfg.ollama_model and cfg.ollama_model not in models:
+                self._set_ai_indicator(f"{cfg.describe()} · model not installed", C.warning,
+                                       f"Run: ollama pull {cfg.ollama_model}")
+            else:
+                self._set_ai_indicator(cfg.describe(), C.success, cfg.ollama_url)
+
+        run_task(self, lambda _t: provider.list_models(), on_result=ok,
+                 on_error=lambda m, _tb: self._set_ai_indicator("Ollama offline", C.danger, m))
+
+    def open_ai_settings(self, message: str = "") -> bool:
+        dlg = AISettingsDialog(self.ai_config, self, message=message if isinstance(message, str) else "")
+        if dlg.exec() != AISettingsDialog.DialogCode.Accepted:
+            return False
+        self.ai_config = dlg.config()
+        self._apply_ai_config()
+        self.telemetry_panel.append_log(f"AI provider: {self.ai_config.describe()}")
+        return True
+
+    def _new_challenge_shortcut(self) -> None:
+        if self._generator is None:
+            self.generate_challenge(*self.prompt_panel.selection())
+
+    def generate_challenge(self, category: str, difficulty: str, topic: str = "") -> None:
+        if self._generator is not None:
+            return
+        if not self.db.is_connected:
+            self.prompt_panel.show_error("Connect to a database first (Database → Connection Settings…).")
+            return
+        if self.ai_config.provider == "claude" and not claude_credentials_hint():
+            if not self.open_ai_settings("Add your Anthropic API key to generate challenges with Claude, "
+                                         "or switch to a local Ollama model."):
+                return
+            if self.ai_config.provider == "claude" and not claude_credentials_hint():
+                return
+        generator = ChallengeGenerator(self.db, self.ai_config, self.challenges)
+        self._generator = generator
+        self.prompt_panel.set_busy(True)
+        self.act_new_challenge.setEnabled(False)
+        label = f"{category} · {difficulty}" + (f" · {topic}" if topic else "")
+        self.telemetry_panel.append_log(f"Generating challenge ({label}) with {self.ai_config.describe()}")
+        started = time.perf_counter()
+
+        def job(task):
+            try:
+                return generator.generate(category, difficulty, topic or None,
+                                          progress=lambda msg: task.report(0.0, msg))
+            except (AIError, AICancelled) as e:
+                return e                    # delivered to on_result with its type intact
+
+        run_task(self, job, on_result=lambda r: self._on_challenge_result(r, started),
+                 on_error=lambda m, _tb: self._on_challenge_result(AIError(f"Unexpected error: {m}"), started),
+                 on_progress=lambda _f, msg: self.prompt_panel.set_status(msg))
+
+    def cancel_challenge(self) -> None:
+        if self._generator is not None:
+            self.prompt_panel.set_status("Cancelling…")
+            self._generator.cancel()
+
+    def _on_challenge_result(self, result, started: float) -> None:
+        self._generator = None
+        self.prompt_panel.set_busy(False)
+        self.act_new_challenge.setEnabled(True)
+        if isinstance(result, AICancelled):
+            self.prompt_panel.set_status("Cancelled.")
+            self.telemetry_panel.append_log("Challenge generation cancelled", "WARN")
+            return
+        if isinstance(result, AIError):
+            self.prompt_panel.show_error(str(result), result.settings_hint)
+            self.telemetry_panel.append_log(f"Challenge generation failed: {result}", "ERROR")
+            if self.ai_config.provider == "ollama" and result.settings_hint:
+                self._set_ai_indicator("Ollama unavailable", C.danger, str(result))
+            return
+        assert isinstance(result, GenerationResult)
+        ch = result.challenge
+        self.challenges.add(ch)
+        self.prompt_panel.show_challenge(ch)
+        self.editor_panel.load_text(ch.language, ch.editor_starter())
+        cost = "" if result.cost_usd is None else f" · ${result.cost_usd:.4f}"
+        verdict = "verified" if ch.verified else "NOT verified: " + "; ".join(ch.verification_notes)
+        self.telemetry_panel.append_log(
+            f"Challenge ready: “{ch.title}” · {ch.model} · {result.output_tokens:,} output tokens{cost} · "
+            f"{result.attempts} attempt(s) · {time.perf_counter() - started:.1f}s · {verdict}",
+            "OK" if ch.verified else "WARN")
+        self._apply_ai_config()
+
+    def _insert_solution(self) -> None:
+        ch = self.prompt_panel.challenge
+        if ch is None:
+            return
+        self.prompt_panel.show_solution()
+        self.editor_panel.load_text(ch.language, ch.reference_solution.strip() + "\n")
+        self.statusBar().showMessage("Reference solution inserted (Ctrl+Z to undo)", 4_000)
+
+    def _fill_recent_menu(self) -> None:
+        self.recent_menu.clear()
+        items = self.challenges.all()[:20]
+        if not items:
+            self.recent_menu.addAction("No challenges yet").setEnabled(False)
+        for ch in items:
+            mark = "✓" if ch.verified else "⚠"
+            act = self.recent_menu.addAction(f"{mark}  {ch.title}  ·  {ch.category} · {ch.difficulty}")
+            act.triggered.connect(lambda _=False, c=ch: self._open_challenge(c))
+
+    def _open_challenge(self, ch: Challenge) -> None:
+        self.prompt_panel.show_challenge(ch)
+        self.editor_panel.load_text(ch.language, ch.editor_starter())
+
     # ---- editor / run stubs ---------------------------------------------------------------
     def _insert_into_editor(self, text: str) -> None:
         editor = self.editor_panel.editor
@@ -305,10 +455,6 @@ class MainWindow(QMainWindow):
 
     def _on_cancel_requested(self) -> None:
         self.telemetry_panel.append_log("Cancel requested", "WARN")
-
-    def _on_generate_requested(self, category: str, difficulty: str) -> None:
-        self.telemetry_panel.append_log(f"Challenge requested: {category} / {difficulty}")
-        self.statusBar().showMessage("AI generator arrives in Phase 3", 4_000)
 
     def _load_demo_dataset(self) -> None:
         self.telemetry_panel.mark_running()
@@ -359,6 +505,8 @@ class MainWindow(QMainWindow):
         self._settings.setValue("window/geometry", self.saveGeometry())
         for name in self._SPLITTERS:
             self._settings.setValue(f"{_LAYOUT_KEY}/{name}", getattr(self, name).saveState())
+        if self._generator is not None:
+            self._generator.cancel()
         wait_for_all(5_000)
         self.db.disconnect()
         super().closeEvent(event)

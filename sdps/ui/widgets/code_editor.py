@@ -201,6 +201,7 @@ class EditorPanel(QFrame):
         self.language_combo.setToolTip("Execution language")
         self.cursor_label = QLabel("Ln 1, Col 1")
         self.cursor_label.setObjectName("Muted")
+        self.cursor_label.setMinimumWidth(self.cursor_label.fontMetrics().horizontalAdvance("Ln 99999, Col 999") + 4)
 
         self.run_button = QPushButton("▶  Run")
         self.run_button.setObjectName("Primary")
@@ -246,6 +247,18 @@ class EditorPanel(QFrame):
         """Selected text if any, otherwise the whole buffer (like most SQL IDEs)."""
         sel = self.editor.textCursor().selectedText()
         return (sel or self.editor.toPlainText()).replace(" ", "\n")
+
+    def load_text(self, language: str, text: str) -> None:
+        """Switch language and replace the buffer as one undoable edit (Ctrl+Z restores your code)."""
+        if language != self._language.value:
+            self.language_combo.setCurrentText(language)
+        cursor = self.editor.textCursor()
+        cursor.beginEditBlock()
+        cursor.select(QTextCursor.SelectionType.Document)
+        cursor.insertText(text)
+        cursor.endEditBlock()
+        self.editor.setTextCursor(cursor)
+        self.editor.setFocus()
 
     def set_running(self, running: bool) -> None:
         self.run_button.setEnabled(not running)

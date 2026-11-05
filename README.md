@@ -9,7 +9,7 @@ against production-scale data.
 |---|---|---|
 | 1 | PyQt6 skeleton, split-screen layout, dark theme | ✅ done |
 | 2 | DB connection manager + AdventureWorks generator (DuckDB default, Postgres optional) | ✅ done |
-| 3 | AI "Senior Principal Data Architect" problem generator | ⏳ |
+| 3 | AI "Senior Principal Data Architect" challenge generator (Claude or Ollama) | ✅ done |
 | 4 | Async SQL/Python execution (QThread workers) | ⏳ |
 
 ## Run
@@ -68,6 +68,41 @@ The data is built to be realistic, and some properties are worth discovering on 
 
 The generator is deterministic: the same scale always produces the same data.
 
+## AI challenges
+
+Go to **Challenge → AI Settings…** and choose a provider:
+
+- **Claude (default).** Uses the Anthropic API. Paste an API key from
+  [console.anthropic.com](https://console.anthropic.com/settings/keys). It's stored in your system keychain
+  (the macOS Keychain on a Mac), never in a file. `ANTHROPIC_API_KEY` and `ant auth login` also work.
+  The model is Claude Opus 5.5 by default, with Sonnet 5.5 and Haiku 5.5 as cheaper options. The dialog shows
+  an estimated cost per challenge, and the telemetry log shows the actual cost of each one.
+- **Ollama (free, local).** Install from [ollama.com](https://ollama.com), then run
+  `ollama pull qwen2.5-coder:14b` (or `qwen2.5-coder:7b` on smaller machines), and select the model in AI Settings.
+
+Choose a category, a difficulty and optionally a topic, then click **New Challenge**. Each challenge works like
+this:
+
+1. **Grounded:** the prompt includes your database's real DDL, row counts, skew and SQL dialect (DuckDB or
+   Postgres).
+2. **Structured:** the model must return JSON in a strict schema covering scenario, tasks, deliverable,
+   expected columns, three progressive hints, the reference solution and interview follow-ups.
+3. **Verified:** the reference solution is checked against your database with `EXPLAIN`. SQL is checked
+   directly, dbt models after their `source()` calls are rendered, and Python through each of its `sql()`
+   queries. If a check fails, the exact database error goes back to the model, with up to 2 automatic repair
+   rounds. Challenges that still fail are shown with a ⚠ badge instead of being hidden.
+
+Hints are revealed one at a time. **Insert Solution** puts the answer in the editor, and you can undo that with
+Ctrl+Z. All challenges are saved under **Challenge → Recent Challenges**.
+
+Execution contracts that Phase 4 will run:
+
+| Category | Deliverable |
+|---|---|
+| Advanced SQL | One read-only `SELECT` / `WITH` query |
+| Python / Pandas | A script using `pd`, `np` and `sql(query) -> DataFrame` that assigns its answer to `result` |
+| Analytics Engineering / dbt | One model `SELECT` using `{{ source('schema', 'table') }}`, plus YAML or macros as artifacts |
+
 ## Tests
 
 ```bash
@@ -96,9 +131,14 @@ senior-data-prep-studio/
 │   ├── ui/
 │   │   ├── main_window.py           # layout, Database menu, connection status, first-run prompt
 │   │   ├── workers.py               # run_task(): background QThread with progress/cancel
-│   │   ├── dialogs/                 # Database settings, Generate data
+│   │   ├── dialogs/                 # Database settings, Generate data, AI settings
 │   │   └── widgets/                 # schema browser, editor, prompt, results grid, telemetry
-│   ├── ai/                          # Phase 3
+│   ├── ai/                          # Qt-free challenge generator
+│   │   ├── challenge.py             # Challenge model, JSON schema, Markdown rendering, local library
+│   │   ├── prompts.py               # persona, rules, deliverable contracts, schema-grounded prompts
+│   │   ├── providers.py             # Claude (SDK, streaming, structured output, caching) + Ollama
+│   │   ├── generator.py             # grounding, EXPLAIN verification, repair loop
+│   │   └── config.py                # provider settings; API key in the system keychain
 │   └── execution/                   # Phase 4
 └── tests/                           # UI smoke tests, data-integrity tests, Postgres tests
 ```
@@ -114,6 +154,8 @@ senior-data-prep-studio/
 | Ctrl+, | Database connection settings |
 | Ctrl+Shift+G | Generate AdventureWorks data |
 | Ctrl+G | New AI challenge |
+| Ctrl+Shift+H | Reveal next hint |
+| Ctrl+Shift+S | Show solution |
 | Ctrl+D | Load 1M-row demo grid |
 | Ctrl+L | Clear results |
 
