@@ -79,6 +79,8 @@ Go to **Challenge → AI Settings…** and choose a provider:
   an estimated cost per challenge, and the telemetry log shows the actual cost of each one.
 - **Ollama (free, local).** Install from [ollama.com](https://ollama.com), then run
   `ollama pull qwen2.5-coder:14b` (or `qwen2.5-coder:7b` on smaller machines), and select the model in AI Settings.
+  Local models are shown a worked example per category, and the app cleans up their common formatting slips (such as
+  code wrapped in Markdown fences). Expect 1–5 minutes per challenge, with lower quality than Claude.
 
 Choose a category, a difficulty and optionally a topic, then click **New Challenge**. Each challenge works like
 this:
@@ -102,6 +104,17 @@ Execution contracts that Phase 4 will run:
 | Advanced SQL | One read-only `SELECT` / `WITH` query |
 | Python / Pandas | A script using `pd`, `np` and `sql(query) -> DataFrame` that assigns its answer to `result` |
 | Analytics Engineering / dbt | One model `SELECT` using `{{ source('schema', 'table') }}`, plus YAML or macros as artifacts |
+
+## Troubleshooting (macOS)
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Could not find the Qt platform plugin "cocoa"` (comes and goes) | The virtual environment is in an iCloud-synced folder (`~/Documents`, `~/Desktop`), and iCloud evicts library files | Create the environment outside synced folders: `python3.12 -m venv ~/.venvs/sdps` |
+| `No matching distribution found for anthropic` | Python 3.9 (macOS built-in) is too old | Install Python 3.12 (`brew install python@3.12`) and recreate the environment |
+| "Database file is in use by another program" | Another copy of the app, or a tool like DBeaver, has the DuckDB file open | Quit it, or `kill <PID>` using the process number shown in the message |
+| The app runs but no window is visible | A window position saved with a different display arrangement | Fixed automatically since v0.3.1; otherwise use Mission Control |
+
+The app checks the first three at startup and prints the fix instead of crashing.
 
 ## Tests
 

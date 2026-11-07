@@ -270,3 +270,56 @@ def test_ui_shows_actionable_error_when_ollama_offline(qapp, tiny_config):
     wait_until(lambda: w._generator is None and "✗" in w.prompt_panel.status.text(), timeout=30)
     assert "Open AI Settings" in w.prompt_panel.status.text()
     w.close()
+
+
+# ───────────────────────────────────────── Phase 3.1 ──────────────────────────────────────────
+@pytest.mark.parametrize("category", ["Advanced SQL", "Python / Pandas", "Analytics Engineering / dbt"])
+def test_worked_examples_are_valid_and_verified(db, category):
+    from sdps.ai.examples import EXAMPLES, example_json
+    ch = Challenge.from_model_output(example_json(category))
+    assert ch.category == category and ch.difficulty == "Staff" and len(ch.hints) == 3
+    known = {t.qualified_name.lower(): t for t in db.introspect()}
+    g = ChallengeGenerator(db, AIConfig(), provider=OllamaProvider(AIConfig()))
+    assert g.verify(ch, known) == [], EXAMPLES[category]["title"]
+
+
+def test_fenced_and_escaped_code_from_small_models_still_verifies(db, fake_ollama):
+    fenced = "```python\n" + PY_OK + "```"
+    escaped = PY_OK.replace("\n", "\\n")
+    for code in (fenced, escaped):
+        fake_ollama.responses = [sql_challenge(category="Python / Pandas", reference_solution=code,
+                                               tables_used=["sales.sales_order_header"])]
+        cfg = AIConfig(provider="ollama", ollama_url=fake_ollama.url, ollama_model="qwen2.5-coder:14b")
+        res = ChallengeGenerator(db, cfg).generate("Python / Pandas", "Staff")
+        assert res.attempts == 1 and res.challenge.verified, res.challenge.verification_notes
+        assert not res.challenge.reference_solution.startswith("```")
+
+
+def test_only_local_models_get_the_worked_example(db, fake_ollama, fake_claude):
+    cfg = AIConfig(provider="ollama", ollama_url=fake_ollama.url, ollama_model="qwen2.5-coder:14b")
+    ChallengeGenerator(db, cfg).generate("Advanced SQL", "Senior")
+    local_user = fake_ollama.requests[0]["body"]["messages"][1]["content"]
+    assert "Customers-to-50% by territory" in local_user and "Do NOT reuse" in local_user
+    gen(db, fake_claude).generate("Advanced SQL", "Senior")
+    assert "Customers-to-50%" not in fake_claude.requests[0]["body"]["messages"][0]["content"]
+
+
+def test_unverified_reason_is_visible_in_panel(qapp):
+    from sdps.ui.widgets.prompt_panel import PromptPanel
+    p = PromptPanel()
+    ch = Challenge.from_model_output(sql_challenge())
+    ch.verified, ch.verification_notes = False, ["Table 'sales.invoice' does not exist."]
+    p.show_challenge(ch)
+    assert "sales.invoice" in p.status.text() and not p.status.isHidden()
+    assert "sales.invoice" in p.meta.toolTip()
+
+
+def test_window_saved_off_screen_is_pulled_back(qapp, tiny_config):
+    from PyQt6.QtGui import QGuiApplication
+    from sdps.ui.main_window import MainWindow
+    w = MainWindow(ConnectionManager(tiny_config), auto_connect=False, prompt_to_seed=False)
+    w.move(50_000, 50_000)
+    w._ensure_on_screen()
+    area = QGuiApplication.primaryScreen().availableGeometry()
+    assert area.intersects(w.frameGeometry())
+    w.close()

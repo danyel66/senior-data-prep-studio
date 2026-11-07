@@ -111,6 +111,7 @@ QPushButton#Danger:disabled, QPushButton#Primary:disabled {{ background: {C.surf
 QComboBox, QLineEdit {{ background: {C.surface_alt}; border: 1px solid {C.border}; border-radius: 5px;
                         padding: 4px 8px; color: {C.text}; }}
 QComboBox:focus, QLineEdit:focus {{ border-color: {C.accent}; }}
+QComboBox:disabled, QLineEdit:disabled {{ color: {C.text_muted}; background: {C.surface}; border-color: {C.surface_alt}; }}
 QComboBox QAbstractItemView {{ background: {C.surface_alt}; border: 1px solid {C.border};
                                selection-background-color: {C.selection}; }}
 QPlainTextEdit, QTextBrowser {{ background: {C.surface}; border: none; color: {C.text};

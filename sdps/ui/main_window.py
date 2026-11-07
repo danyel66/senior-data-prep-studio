@@ -488,10 +488,24 @@ class MainWindow(QMainWindow):
         geometry = self._settings.value("window/geometry")
         if isinstance(geometry, QByteArray):
             self.restoreGeometry(geometry)
+        self._ensure_on_screen()
         for name in self._SPLITTERS:
             state = self._settings.value(f"{_LAYOUT_KEY}/{name}")
             if isinstance(state, QByteArray):
                 getattr(self, name).restoreState(state)
+
+    def _ensure_on_screen(self) -> None:
+        """A geometry saved with another monitor setup can put the window off-screen: pull it back."""
+        from PyQt6.QtGui import QGuiApplication
+        screens = QGuiApplication.screens()
+        frame = self.frameGeometry()
+        visible = any(s.availableGeometry().intersected(frame).width() >= 200 and
+                      s.availableGeometry().intersected(frame).height() >= 100 for s in screens)
+        if visible or not screens:
+            return
+        area = QGuiApplication.primaryScreen().availableGeometry()
+        self.resize(min(self.width(), area.width()), min(self.height(), area.height()))
+        self.move(area.center() - self.rect().center())
 
     def _reset_layout(self) -> None:
         self.schema_browser.setVisible(True)

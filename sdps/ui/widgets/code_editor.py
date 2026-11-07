@@ -44,8 +44,7 @@ STARTER_CODE = {
     ),
     Language.PYTHON: (
         "# Senior Data Prep Studio · Python workspace\n"
-        "# `con` (DuckDB connection) and `pd` will be injected in Phase 4.\n"
-        "import pandas as pd\n\n"
+        "# Available when you run: pd, np, sql(query) -> DataFrame. Assign your answer to `result`.\n\n"
         "def top_customers(orders: pd.DataFrame, n: int = 10) -> pd.DataFrame:\n"
         "    \"\"\"Vectorised top-N customers by lifetime value.\"\"\"\n"
         "    return (\n"
@@ -55,7 +54,7 @@ STARTER_CODE = {
         "              .nlargest(n)\n"
         "              .reset_index(name=\"ltv\")\n"
         "    )\n\n"
-        "result = top_customers(con.sql(\"SELECT * FROM sales.sales_order_header\").df())\n"
+        "result = top_customers(sql(\"SELECT customer_id, total_due FROM sales.sales_order_header\"))\n"
     ),
 }
 

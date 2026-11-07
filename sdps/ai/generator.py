@@ -19,6 +19,7 @@ from dataclasses import dataclass, field
 from ..db import ConnectionManager, DatabaseError, TableInfo
 from .challenge import CHALLENGE_SCHEMA, Challenge, ChallengeFormatError, ChallengeStore
 from .config import AIConfig
+from .examples import example_json
 from .prompts import build_repair_prompt, build_system_prompt, build_user_prompt
 from .providers import AICancelled, AIError, Completion, Provider, create_provider
 
@@ -96,7 +97,9 @@ class ChallengeGenerator:
         dialect = self.manager.config.backend
         system = build_system_prompt(dialect, build_data_profile(self.manager, tables))
         avoid = self.store.recent_titles(category) if self.store else []
-        user = build_user_prompt(category, difficulty, topic, avoid)
+        # small local models need a worked example; Claude does better without one to anchor on
+        example = example_json(category) if self.provider.name == "ollama" else None
+        user = build_user_prompt(category, difficulty, topic, avoid, example)
 
         completions: list[Completion] = []
         challenge: Challenge | None = None

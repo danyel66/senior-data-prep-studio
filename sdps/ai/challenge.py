@@ -4,6 +4,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import os
+import re
 import uuid
 from dataclasses import asdict, dataclass, field, fields
 from pathlib import Path
@@ -59,6 +60,20 @@ CHALLENGE_SCHEMA: dict = {
                  "reference_solution", "solution_explanation", "additional_artifacts", "follow_ups"],
     "additionalProperties": False,
 }
+
+
+_FENCE = re.compile(r"^\s*```[\w+-]*[ \t]*\n(.*?)\n?```\s*$", re.DOTALL)
+
+
+def clean_code(code: str) -> str:
+    """Undo common small-model formatting mistakes in a code field: Markdown fences around the
+    code, and newlines that arrive as literal backslash-n sequences."""
+    code = code.strip()
+    if m := _FENCE.match(code):
+        code = m.group(1).strip()
+    if "\n" not in code and "\\n" in code:
+        code = code.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\\t", "    ").replace('\\"', '"')
+    return code
 
 
 class ChallengeFormatError(ValueError):
@@ -146,6 +161,7 @@ class Challenge:
             problems.append("'tasks' must not be empty")
         if problems:
             raise ChallengeFormatError("; ".join(problems))
+        clean["reference_solution"] = clean_code(clean["reference_solution"])
         return cls(**clean)
 
     def model_json(self) -> str:

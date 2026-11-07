@@ -84,7 +84,7 @@ def test_language_switch_keeps_separate_buffers(window):
     ed.editor.setPlainText("SELECT 1;")
     ed.language_combo.setCurrentText(Language.PYTHON.value)
     assert ed.language is Language.PYTHON
-    assert "import pandas" in ed.editor.toPlainText()
+    assert "sql(" in ed.editor.toPlainText() and "con.sql" not in ed.editor.toPlainText()
     ed.language_combo.setCurrentText(Language.SQL.value)
     assert ed.editor.toPlainText() == "SELECT 1;"
 

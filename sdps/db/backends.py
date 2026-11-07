@@ -188,8 +188,12 @@ class DuckDBBackend(Backend):
         except duckdb.IOException as e:
             msg = str(e)
             if "lock" in msg.lower():
-                msg = ("The database file is locked by another process. Close other copies of "
-                       "Senior Data Prep Studio (or tools like DBeaver) using it.\n\n" + msg)
+                import re
+                pid = re.search(r"PID (\d+)", msg)
+                who = f" (process {pid.group(1)})" if pid else ""
+                msg = (f"The database file is in use by another program{who}. Quit other copies of Senior Data "
+                       f"Prep Studio or tools like DBeaver, or run: kill {pid.group(1) if pid else '<PID>'}"
+                       f"\n\n{msg}")
             raise DatabaseError(msg) from e
         except duckdb.Error as e:
             raise DatabaseError(str(e)) from e

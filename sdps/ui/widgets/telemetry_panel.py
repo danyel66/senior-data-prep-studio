@@ -112,6 +112,8 @@ class TelemetryPanel(QFrame):
         safe = message.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         self.log.appendHtml(f'<span style="color:{C.syn_comment}">{ts}</span> '
                             f'<span style="color:{color}">[{level}]</span> {safe}')
+        bar = self.log.verticalScrollBar()          # always show the newest line
+        bar.setValue(bar.maximum())
 
     def _refresh_live_memory(self) -> None:
         rss = process_rss_mb()

@@ -21,12 +21,14 @@ channels, type-2 history tables, the manager_id org tree, weekday-only FX rates,
 customers without orders, and discontinued products that still sell.
 - Calibrate difficulty. Senior: one advanced technique applied carefully. Staff: several techniques \
 combined, with an edge case that breaks the naive approach. Principal: a design trade-off \
-(performance, correctness, maintainability) must be argued, not just coded.
+(performance, correctness, maintainability) must be argued, not just coded. A task that a single \
+GROUP BY or a single groupby().sum() solves is junior level: never produce one.
 - tasks: 2-5 concrete, testable requirements. State tie-breaking, NULL handling and date boundaries \
 explicitly so there is exactly one correct result.
 - hints: exactly 3, progressive. The first points to the technique; the last nearly gives the answer.
 - reference_solution must be complete, correct, runnable code that follows the deliverable contract \
-for its category (below). No placeholders, no "...".
+for its category (below). No placeholders, no "...". Write raw code only: no Markdown code fences \
+(```), and use real line breaks.
 - expected_columns: the exact output column names of the reference solution, in order. \
 order_matters: true only if the tasks require a specific ORDER BY.
 - follow_ups: 2-3 interview-style questions about scale, indexing, testing or design alternatives.
@@ -73,8 +75,13 @@ def build_system_prompt(dialect: str, data_profile: str) -> str:
     ])
 
 
-def build_user_prompt(category: str, difficulty: str, topic: str | None, avoid_titles: list[str]) -> str:
-    lines = [f"Create one new {difficulty}-level challenge in the category \"{category}\"."]
+def build_user_prompt(category: str, difficulty: str, topic: str | None, avoid_titles: list[str],
+                      example: str | None = None) -> str:
+    lines = []
+    if example:
+        lines += ["Here is an example of the expected quality, depth and JSON format. Do NOT reuse its "
+                  "topic, tables or wording; write a different challenge.", "```json", example, "```", ""]
+    lines.append(f"Create one new {difficulty}-level challenge in the category \"{category}\".")
     if topic:
         lines.append(f"Focus area: {topic}.")
     else:

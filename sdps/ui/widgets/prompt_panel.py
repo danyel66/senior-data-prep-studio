@@ -164,6 +164,12 @@ class PromptPanel(QFrame):
                 combo.blockSignals(False)
         self._render()
         self.footer.show()
+        if not challenge.verified and challenge.verification_notes:
+            notes = " · ".join(challenge.verification_notes)
+            safe = notes.replace("&", "&amp;").replace("<", "&lt;")
+            self.status.setText(f'<span style="color:{C.warning}">⚠  The reference solution could not be '
+                                f'verified against your database: {safe}</span>')
+            self.status.show()
 
     def next_hint(self) -> None:
         if self.challenge and self.hints_revealed < len(self.challenge.hints):
@@ -204,7 +210,7 @@ class PromptPanel(QFrame):
         self.hint_button.setEnabled(self.hints_revealed < total and not self.solution_shown)
         self.solution_button.setEnabled(not self.solution_shown)
         badge = (f'<span style="color:{C.success}">✓ verified on your database</span>' if ch.verified else
-                 f'<span style="color:{C.warning}" title="{"; ".join(ch.verification_notes)}">'
-                 "⚠ solution not verified</span>")
+                 f'<span style="color:{C.warning}">⚠ solution not verified</span>')
+        self.meta.setToolTip("" if ch.verified else "\n".join(ch.verification_notes))
         cost = "" if ch.cost_usd is None else (" · free (local)" if ch.cost_usd == 0 else f" · ${ch.cost_usd:.3f}")
         self.meta.setText(f"{badge} · {ch.model}{cost}")
