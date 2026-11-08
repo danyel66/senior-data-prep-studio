@@ -40,7 +40,7 @@ class DatabaseSettingsDialog(QDialog):
         self.duck_memory.setEditable(True)
         self.duck_memory.addItems(["", "2GB", "4GB", "8GB", "16GB"])
         self.duck_memory.setCurrentText(config.duckdb_memory_limit)
-        self.duck_memory.lineEdit().setPlaceholderText("default (80% of RAM)")
+        self.duck_memory.lineEdit().setPlaceholderText("automatic (half of your RAM)")
         self.duck_threads = QSpinBox()
         self.duck_threads.setRange(0, 256)
         self.duck_threads.setSpecialValueText("auto (all cores)")

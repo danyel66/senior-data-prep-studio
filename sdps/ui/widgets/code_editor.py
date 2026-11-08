@@ -22,7 +22,7 @@ class Language(str, Enum):
 STARTER_CODE = {
     Language.SQL: (
         "-- Senior Data Prep Studio · SQL workspace\n"
-        "-- Ctrl+Enter to run (execution engine arrives in Phase 4)\n\n"
+        "-- Ctrl+Enter runs the script (or just the selection) · EXPLAIN ANALYZE shows the plan\n\n"
         "WITH monthly_sales AS (\n"
         "    SELECT\n"
         "        date_trunc('month', soh.order_date) AS month,\n"
@@ -75,6 +75,7 @@ class CodeEditor(QPlainTextEdit):
     """QPlainTextEdit is block-based and virtualised, so it stays responsive on large scripts."""
 
     run_requested = pyqtSignal()
+    check_requested = pyqtSignal()
     INDENT = " " * 4
 
     def __init__(self, parent: QWidget | None = None):
@@ -152,7 +153,7 @@ class CodeEditor(QPlainTextEdit):
     def keyPressEvent(self, e: QKeyEvent) -> None:  # noqa: N802
         mods = e.modifiers()
         if e.key() in (Qt.Key.Key_Return, Qt.Key.Key_Enter) and mods & Qt.KeyboardModifier.ControlModifier:
-            self.run_requested.emit()
+            (self.check_requested if mods & Qt.KeyboardModifier.ShiftModifier else self.run_requested).emit()
             return
         if e.key() == Qt.Key.Key_Tab and not self.textCursor().hasSelection():
             self.insertPlainText(self.INDENT)
@@ -185,6 +186,7 @@ class EditorPanel(QFrame):
     """Editor + header toolbar (language selector, run/cancel buttons)."""
 
     run_requested = pyqtSignal(str, str)     # (language, code)
+    check_requested = pyqtSignal(str, str)   # (language, code)
     cancel_requested = pyqtSignal()
     language_changed = pyqtSignal(str)
 
@@ -205,6 +207,9 @@ class EditorPanel(QFrame):
         self.run_button = QPushButton("▶  Run")
         self.run_button.setObjectName("Primary")
         self.run_button.setToolTip("Execute (Ctrl+Enter)")
+        self.check_button = QPushButton("✓  Check")
+        self.check_button.setToolTip("Run and compare with the challenge's reference solution (Ctrl+Shift+Enter)")
+        self.check_button.setEnabled(False)
         self.cancel_button = QPushButton("■  Cancel")
         self.cancel_button.setObjectName("Danger")
         self.cancel_button.setEnabled(False)
@@ -218,6 +223,7 @@ class EditorPanel(QFrame):
         header.addWidget(self.cursor_label)
         header.addSpacing(8)
         header.addWidget(self.cancel_button)
+        header.addWidget(self.check_button)
         header.addWidget(self.run_button)
 
         self.editor = CodeEditor()
@@ -233,6 +239,8 @@ class EditorPanel(QFrame):
 
         self.language_combo.currentTextChanged.connect(self._on_language_changed)
         self.run_button.clicked.connect(self._emit_run)
+        self.check_button.clicked.connect(self._emit_check)
+        self.editor.check_requested.connect(self._emit_check)
         self.editor.run_requested.connect(self._emit_run)
         self.cancel_button.clicked.connect(self.cancel_requested)
         self.editor.cursorPositionChanged.connect(self._update_cursor_label)
@@ -259,10 +267,19 @@ class EditorPanel(QFrame):
         self.editor.setTextCursor(cursor)
         self.editor.setFocus()
 
+    def set_checkable(self, checkable: bool) -> None:
+        self._checkable = checkable
+        self.check_button.setEnabled(checkable and self.run_button.isEnabled())
+
     def set_running(self, running: bool) -> None:
         self.run_button.setEnabled(not running)
+        self.check_button.setEnabled(not running and getattr(self, "_checkable", False))
         self.cancel_button.setEnabled(running)
         self.language_combo.setEnabled(not running)
+
+    def _emit_check(self) -> None:
+        if self.check_button.isEnabled():
+            self.check_requested.emit(self._language.value, self.editor.toPlainText())
 
     def _emit_run(self) -> None:
         if self.run_button.isEnabled():

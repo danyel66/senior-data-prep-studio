@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import time
 
-from PyQt6.QtCore import QByteArray, QSettings, Qt, QTimer
+from PyQt6.QtCore import QByteArray, QObject, QSettings, Qt, QTimer, pyqtSignal
 from PyQt6.QtGui import QAction, QCloseEvent, QKeySequence
 from PyQt6.QtWidgets import QLabel, QMainWindow, QMessageBox, QProgressBar, QSplitter, QToolBar, QVBoxLayout, \
     QWidget
@@ -18,7 +18,8 @@ from PyQt6.QtWidgets import QLabel, QMainWindow, QMessageBox, QProgressBar, QSpl
 from .. import APP_NAME, ORG_NAME, __version__
 from ..ai import AICancelled, AIConfig, AIError, Challenge, ChallengeGenerator, ChallengeStore, \
     GenerationResult, OllamaProvider, claude_credentials_hint
-from ..db import ConnectionManager, ConnectionStatus, DatabaseConfig, TableInfo
+from ..db import ConnectionManager, ConnectionStatus, DatabaseConfig, DatabaseError, TableInfo
+from ..execution import ExecutionCancelled, ExecutionError, Executor, check_python, check_sql
 from .dialogs import AISettingsDialog, DatabaseSettingsDialog, SeedDialog
 from .theme import C
 from .widgets import EditorPanel, PromptPanel, ResultsPanel, TelemetryPanel
@@ -28,6 +29,11 @@ from .widgets.telemetry_panel import ExecutionMetrics, process_rss_mb
 from .workers import run_task, wait_for_all
 
 _LAYOUT_KEY = "layout/v2"     # bump when the splitter structure changes
+
+
+class _RunBridge(QObject):
+    """Carries 'first rows are available' from the worker thread to the UI thread."""
+    columns_ready = pyqtSignal(object, object)       # (columns, growing row list)
 
 
 class MainWindow(QMainWindow):
@@ -46,6 +52,11 @@ class MainWindow(QMainWindow):
         self.ai_config = AIConfig.load()
         self.challenges = ChallengeStore()
         self._generator: ChallengeGenerator | None = None
+        self._executor: Executor | None = None
+        self._run_started = 0.0
+        self._bridge = _RunBridge(self)
+        self._bridge.columns_ready.connect(self.results_panel_columns_ready)
+        self._live_timer = QTimer(self, interval=200, timeout=self._update_live_telemetry)
 
         self.schema_browser = SchemaBrowser()
         self.prompt_panel = PromptPanel()
@@ -63,6 +74,7 @@ class MainWindow(QMainWindow):
         self._apply_ai_config()
         if recent := self.challenges.all():
             self.prompt_panel.show_challenge(recent[0])
+        self._sync_checkable()
         if auto_connect:
             QTimer.singleShot(0, self.connect_database)
 
@@ -106,6 +118,9 @@ class MainWindow(QMainWindow):
             return a
 
         self.act_run = action("Run", self.editor_panel._emit_run, "F5", "Execute the current script")
+        self.act_check = action("Check Answer", self.editor_panel._emit_check, "Ctrl+Shift+Return",
+                                "Run and compare with the reference solution")
+        self.act_cancel_run = action("Cancel Run", self.cancel_execution, None)
         self.act_new_challenge = action("New Challenge", self._new_challenge_shortcut, "Ctrl+G",
                                         "Generate a new AI challenge")
         self.act_hint = action("Reveal Next Hint", self.prompt_panel.next_hint, "Ctrl+Shift+H")
@@ -145,7 +160,7 @@ class MainWindow(QMainWindow):
         m_challenge.addSeparator()
         m_challenge.addAction(self.act_ai_settings)
         m_run = mb.addMenu("&Run")
-        m_run.addActions([self.act_run])
+        m_run.addActions([self.act_run, self.act_check, self.act_cancel_run])
         m_view = mb.addMenu("&View")
         m_view.addActions([self.act_toggle_schema, self.act_demo, self.act_clear])
         m_view.addSeparator()
@@ -184,8 +199,9 @@ class MainWindow(QMainWindow):
         sb.showMessage("Ready", 3_000)
 
     def _connect_signals(self) -> None:
-        self.editor_panel.run_requested.connect(self._on_run_requested)
-        self.editor_panel.cancel_requested.connect(self._on_cancel_requested)
+        self.editor_panel.run_requested.connect(self.run_code)
+        self.editor_panel.check_requested.connect(self.check_answer)
+        self.editor_panel.cancel_requested.connect(self.cancel_execution)
         self.editor_panel.language_changed.connect(
             lambda lang: self.statusBar().showMessage(f"Language: {lang}", 2_000))
         self.prompt_panel.generate_requested.connect(self.generate_challenge)
@@ -410,6 +426,7 @@ class MainWindow(QMainWindow):
         ch = result.challenge
         self.challenges.add(ch)
         self.prompt_panel.show_challenge(ch)
+        self._sync_checkable()
         self.editor_panel.load_text(ch.language, ch.editor_starter())
         cost = "" if result.cost_usd is None else f" · ${result.cost_usd:.4f}"
         verdict = "verified" if ch.verified else "NOT verified: " + "; ".join(ch.verification_notes)
@@ -439,6 +456,7 @@ class MainWindow(QMainWindow):
 
     def _open_challenge(self, ch: Challenge) -> None:
         self.prompt_panel.show_challenge(ch)
+        self._sync_checkable()
         self.editor_panel.load_text(ch.language, ch.editor_starter())
 
     # ---- editor / run stubs ---------------------------------------------------------------
@@ -447,14 +465,122 @@ class MainWindow(QMainWindow):
         editor.insertPlainText(text)
         editor.setFocus()
 
-    def _on_run_requested(self, language: str, code: str) -> None:
-        lines = code.count("\n") + 1
-        self.telemetry_panel.append_log(f"Run requested: {language}, {lines} lines, {len(code):,} chars")
-        self.telemetry_panel.append_log("Execution engine not available yet (Phase 4)", "WARN")
-        self.statusBar().showMessage("Execution engine arrives in Phase 4", 4_000)
+    # ---- execution -----------------------------------------------------------------------
+    def _sync_checkable(self) -> None:
+        self.editor_panel.set_checkable(self.prompt_panel.challenge is not None)
 
-    def _on_cancel_requested(self) -> None:
-        self.telemetry_panel.append_log("Cancel requested", "WARN")
+    def run_code(self, language: str, code: str) -> None:
+        self._start_execution(language, code, check=False)
+
+    def check_answer(self, language: str, code: str) -> None:
+        self._start_execution(language, code, check=True)
+
+    def cancel_execution(self) -> None:
+        if self._executor is not None:
+            self.statusBar().showMessage("Cancelling…")
+            self._executor.cancel()
+
+    def _start_execution(self, language: str, code: str, *, check: bool) -> None:
+        if self._executor is not None:
+            return
+        rp = self.results_panel
+        if not self.db.is_connected:
+            rp.show_output("Not connected to a database (Database → Connection Settings…).", error=True)
+            return
+        challenge = self.prompt_panel.challenge if check else None
+        if check:
+            if challenge is None:
+                rp.show_output("Generate or open a challenge first, then Check compares your answer with it.", error=True)
+                return
+            if challenge.language != language:
+                rp.show_output(f"This challenge expects {challenge.language}; the editor is set to {language}.",
+                               error=True)
+                return
+        executor = Executor(self.db)
+        self._executor = executor
+        rp.clear()
+        self.editor_panel.set_running(True)
+        self.telemetry_panel.mark_running()
+        self.progress.show()
+        self._run_started = time.perf_counter()
+        self._live_timer.start()
+        lines = code.count("\n") + 1
+        self.telemetry_panel.append_log(("Checking answer" if check else "Running") + f": {language}, {lines} lines")
+        bridge = self._bridge
+
+        def job(_task):
+            try:
+                if language == "SQL":
+                    run = executor.run_sql(code, on_columns=lambda cols, rows: bridge.columns_ready.emit(cols, rows))
+                    verdict = (check_sql(self.db, code, challenge.reference_solution, challenge.order_matters)
+                               if check else None)
+                else:
+                    run = executor.run_python(code)
+                    verdict = (check_python(executor, run.dataframe, challenge.reference_solution,
+                                            challenge.order_matters) if check else None)
+                return run, verdict
+            except (ExecutionError, ExecutionCancelled, DatabaseError) as e:
+                return e
+
+        run_task(self, job, on_result=self._on_execution_done,
+                 on_error=lambda m, tb: self._on_execution_done(ExecutionError(m, tb)))
+
+    def results_panel_columns_ready(self, columns, rows) -> None:
+        if self._executor is not None:
+            self.results_panel.show_results(columns, rows)
+
+    def _update_live_telemetry(self) -> None:
+        ex = self._executor
+        if ex is None:
+            return
+        rss = ex.sampler.current_mb if ex.sampler else None
+        self.telemetry_panel.show_live((time.perf_counter() - self._run_started) * 1000, ex.rows_so_far, rss)
+        if self.results_panel.model.columnCount():
+            self.results_panel.update_count(streaming=True)
+
+    def _on_execution_done(self, result) -> None:
+        self._live_timer.stop()
+        self._executor = None
+        self.editor_panel.set_running(False)
+        self.progress.hide()
+        rp, tp = self.results_panel, self.telemetry_panel
+        elapsed = (time.perf_counter() - self._run_started) * 1000
+        if isinstance(result, ExecutionCancelled):
+            rp.update_count()
+            rp.show_output("Cancelled.")
+            tp.show_metrics(ExecutionMetrics(elapsed, rp.model.total_rows, rp.model.columnCount(), None, "Cancelled"))
+            tp.append_log("Run cancelled", "WARN")
+            self.statusBar().showMessage("Cancelled", 3_000)
+            return
+        if isinstance(result, (ExecutionError, DatabaseError)):
+            details = getattr(result, "details", str(result))
+            rp.show_output(details, error=True)
+            tp.show_metrics(ExecutionMetrics(elapsed, 0, 0, None, "Error"))
+            tp.append_log(str(result).splitlines()[0][:300], "ERROR")
+            return
+        run, verdict = result
+        if run.columns:
+            if rp.model._rows is not run.rows:
+                rp.show_results(run.columns, run.rows, run.truncated)
+            else:
+                rp.set_truncated(run.truncated)
+        if run.output:
+            rp.show_output(run.output, focus=not run.columns and verdict is None)
+        if run.plan:
+            rp.show_plan(run.plan)
+        status = "OK"
+        if verdict is not None:
+            rp.show_check_result(verdict)
+            status = "Correct" if verdict.passed else "Not quite"
+        tp.show_metrics(ExecutionMetrics(run.elapsed_ms, run.row_count, len(run.columns), run.peak_rss_mb, status,
+                                         run.mem_delta_mb, run.truncated))
+        mem = "" if run.peak_rss_mb is None else f" · peak {run.peak_rss_mb:,.0f} MB (+{run.mem_delta_mb or 0:,.0f})"
+        tp.append_log(f"{run.language}: {run.row_count:,}{'+' if run.truncated else ''} rows in "
+                      f"{run.elapsed_ms:,.0f} ms{mem}", "OK")
+        if verdict is not None:
+            tp.append_log(("✓ " if verdict.passed else "✗ ") + verdict.headline, "OK" if verdict.passed else "WARN")
+        if run.schema_changed:
+            self.refresh_schema()
 
     def _load_demo_dataset(self) -> None:
         self.telemetry_panel.mark_running()
@@ -521,6 +647,9 @@ class MainWindow(QMainWindow):
             self._settings.setValue(f"{_LAYOUT_KEY}/{name}", getattr(self, name).saveState())
         if self._generator is not None:
             self._generator.cancel()
+        if self._executor is not None:
+            self._executor.cancel()
+        self._live_timer.stop()
         wait_for_all(5_000)
         self.db.disconnect()
         super().closeEvent(event)

@@ -17,6 +17,8 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from ..db import ConnectionManager, DatabaseError, TableInfo
+from ..execution.sqltools import SOURCE_RE as _SOURCE
+from ..execution.sqltools import render_dbt
 from .challenge import CHALLENGE_SCHEMA, Challenge, ChallengeFormatError, ChallengeStore
 from .config import AIConfig
 from .examples import example_json
@@ -27,8 +29,6 @@ MAX_REPAIRS = 2
 _SCHEMAS = ("person", "humanresources", "production", "purchasing", "sales")
 # only names right after FROM/JOIN, so aliases like `person.first_name` aren't mistaken for tables
 _TABLE_REF = re.compile(r"\b(?:from|join)\s+(" + "|".join(_SCHEMAS) + r")\.([a-z_][a-z0-9_]*)\b", re.IGNORECASE)
-_SOURCE = re.compile(r"\{\{\s*source\(\s*['\"](\w+)['\"]\s*,\s*['\"](\w+)['\"]\s*\)\s*\}\}")
-_JINJA_BLOCK = re.compile(r"\{\{.*?\}\}|\{%.*?%\}", re.DOTALL)
 
 
 @dataclass
@@ -160,8 +160,7 @@ class ChallengeGenerator:
         if ch.category == "Analytics Engineering / dbt":
             if "ref(" in sql:
                 return ["The dbt model must use source() only, not ref()."]
-            sql = _SOURCE.sub(lambda m: f"{m.group(1)}.{m.group(2)}", sql)
-            sql = _JINJA_BLOCK.sub("", sql)
+            sql = render_dbt(sql)
         error = self._explain(sql)
         return problems + ([f"The reference solution fails on the database: {error}"] if error else [])
 

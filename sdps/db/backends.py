@@ -59,9 +59,29 @@ _COLUMNS_SQL = """
 """
 
 
+class RowCursor(ABC):
+    """An open result that is read in batches (so huge results never sit in memory at once)."""
+    columns: list[str]
+    types: list[str]           # backend type names, upper-case (e.g. "DOUBLE", "NUMERIC")
+
+    @abstractmethod
+    def fetch(self, n: int) -> list[tuple]: ...
+
+    @abstractmethod
+    def close(self) -> None: ...
+
+
 class Session(ABC):
     @abstractmethod
     def execute(self, sql: str, params: Any = None) -> QueryResult: ...
+
+    @abstractmethod
+    def open(self, sql: str) -> RowCursor:
+        """Run one statement and return a cursor over its rows (columns == [] if it returns none)."""
+
+    @abstractmethod
+    def fetch_df(self, sql: str):
+        """Run a query and return a pandas DataFrame."""
 
     @abstractmethod
     def interrupt(self) -> None:
@@ -155,6 +175,21 @@ class DuckDBSession(Session):
             raise DatabaseError(str(e).strip()) from e
         return QueryResult(columns, rows, (time.perf_counter() - t0) * 1000, len(rows))
 
+    def open(self, sql: str) -> RowCursor:
+        import duckdb
+        try:
+            cur = self._con.execute(sql)
+        except duckdb.Error as e:
+            raise DatabaseError(str(e).strip()) from e
+        return _DuckDBRowCursor(cur)
+
+    def fetch_df(self, sql: str):
+        import duckdb
+        try:
+            return self._con.execute(sql).df()
+        except duckdb.Error as e:
+            raise DatabaseError(str(e).strip()) from e
+
     def interrupt(self) -> None:
         try:
             self._con.interrupt()
@@ -166,6 +201,26 @@ class DuckDBSession(Session):
             self._con.close()
         except Exception:
             pass
+
+
+class _DuckDBRowCursor(RowCursor):
+    def __init__(self, cur):
+        self._cur = cur
+        desc = cur.description or []
+        self.columns = [d[0] for d in desc]
+        self.types = [str(d[1]).upper() for d in desc]
+
+    def fetch(self, n: int) -> list[tuple]:
+        import duckdb
+        if not self.columns:
+            return []
+        try:
+            return self._cur.fetchmany(n)
+        except duckdb.Error as e:
+            raise DatabaseError(str(e).strip()) from e
+
+    def close(self) -> None:
+        pass   # the next execute() on the session supersedes this result
 
 
 class DuckDBBackend(Backend):
@@ -181,6 +236,9 @@ class DuckDBBackend(Backend):
         settings: dict[str, Any] = {}
         if self.config.duckdb_memory_limit:
             settings["memory_limit"] = self.config.duckdb_memory_limit
+        elif (half := _half_of_ram_gb()) is not None:
+            # DuckDB's default (80% of RAM) leaves too little for pandas + the OS on 8-16 GB laptops
+            settings["memory_limit"] = f"{half}GB"
         if self.config.duckdb_threads:
             settings["threads"] = int(self.config.duckdb_threads)
         try:
@@ -250,6 +308,26 @@ class PostgresSession(Session):
             raise DatabaseError(str(e).strip()) from e
         return QueryResult(columns, rows, (time.perf_counter() - t0) * 1000, rowcount)
 
+    def open(self, sql: str) -> RowCursor:
+        import psycopg
+        from ..execution.sqltools import strip_leading_comments
+        streamable = strip_leading_comments(sql).lower().startswith(("select", "with", "values", "table"))
+        try:
+            if streamable:   # server-side cursor: rows stay on the server until fetched
+                cur = self._conn.cursor(name=f"sdps_{id(self):x}", withhold=True)
+                cur.itersize = 2000
+            else:
+                cur = self._conn.cursor()
+            cur.execute(sql)
+        except psycopg.Error as e:
+            raise DatabaseError(str(e).strip()) from e
+        return _PostgresRowCursor(cur, self._conn)
+
+    def fetch_df(self, sql: str):
+        import pandas as pd
+        result = self.execute(sql)
+        return pd.DataFrame.from_records(result.rows, columns=result.columns)
+
     def interrupt(self) -> None:
         try:
             self._conn.cancel_safe(timeout=3)
@@ -259,6 +337,32 @@ class PostgresSession(Session):
     def close(self) -> None:
         try:
             self._conn.close()
+        except Exception:
+            pass
+
+
+class _PostgresRowCursor(RowCursor):
+    def __init__(self, cur, conn):
+        self._cur = cur
+        desc = cur.description or []
+        self.columns = [d.name for d in desc]
+        self.types = []
+        for d in desc:
+            info = conn.adapters.types.get(d.type_code)
+            self.types.append((info.name if info else str(d.type_code)).upper())
+
+    def fetch(self, n: int) -> list[tuple]:
+        import psycopg
+        if not self.columns:
+            return []
+        try:
+            return self._cur.fetchmany(n)
+        except psycopg.Error as e:
+            raise DatabaseError(str(e).strip()) from e
+
+    def close(self) -> None:
+        try:
+            self._cur.close()
         except Exception:
             pass
 
@@ -316,6 +420,14 @@ class PostgresBackend(Backend):
             return dict(self.execute("SELECT key, value FROM public.sdps_metadata").rows)
         except DatabaseError:
             return {}
+
+
+def _half_of_ram_gb() -> int | None:
+    try:
+        import psutil
+        return max(1, int(psutil.virtual_memory().total / 2**30 / 2))
+    except Exception:
+        return None
 
 
 def create_backend(config: DatabaseConfig) -> Backend:

@@ -213,4 +213,4 @@ class PromptPanel(QFrame):
                  f'<span style="color:{C.warning}">⚠ solution not verified</span>')
         self.meta.setToolTip("" if ch.verified else "\n".join(ch.verification_notes))
         cost = "" if ch.cost_usd is None else (" · free (local)" if ch.cost_usd == 0 else f" · ${ch.cost_usd:.3f}")
-        self.meta.setText(f"{badge} · {ch.model}{cost}")
+        self.meta.setText(badge + (f" · {ch.model}" if ch.model else "") + cost)

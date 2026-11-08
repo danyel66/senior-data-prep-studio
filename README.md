@@ -10,7 +10,7 @@ against production-scale data.
 | 1 | PyQt6 skeleton, split-screen layout, dark theme | ✅ done |
 | 2 | DB connection manager + AdventureWorks generator (DuckDB default, Postgres optional) | ✅ done |
 | 3 | AI "Senior Principal Data Architect" challenge generator (Claude or Ollama) | ✅ done |
-| 4 | Async SQL/Python execution (QThread workers) | ⏳ |
+| 4 | Async SQL/Python execution, live telemetry, answer checking | ✅ done |
 
 ## Run
 
@@ -105,6 +105,29 @@ Execution contracts that Phase 4 will run:
 | Python / Pandas | A script using `pd`, `np` and `sql(query) -> DataFrame` that assigns its answer to `result` |
 | Analytics Engineering / dbt | One model `SELECT` using `{{ source('schema', 'table') }}`, plus YAML or macros as artifacts |
 
+## Running and checking your code
+
+- **Run (Ctrl+Enter / F5).** Runs the whole editor, or only the selected text. SQL scripts can have several
+  statements (for example `CREATE INDEX …; SELECT …`). The last statement's rows stream into the grid while the
+  query is still running, and the window never freezes. The grid shows the first 100,000 rows. Python scripts
+  run with `pd`, `np` and `sql("…") -> DataFrame`; whatever you assign to `result` appears in the grid, and
+  `print` output goes to the **Output** tab.
+- **Cancel.** Stops a running query or Python script within a fraction of a second, including infinite loops.
+- **Telemetry.** Shows execution time, rows returned, and peak process memory with how much the run added,
+  updated live while the run is in progress.
+- **`EXPLAIN` / `EXPLAIN ANALYZE`.** Plans appear in the **Plan** tab. On DuckDB, look for lines like
+  `Row Groups Scanned: 5 / 9`, which show zone maps skipping data.
+- **Check (Ctrl+Shift+Enter).** Compares your answer with the challenge's reference solution:
+  - SQL and dbt answers are compared inside the database with `EXCEPT ALL` in both directions, so results of
+    any size are checked without loading them into memory.
+  - Python DataFrames are compared row by row using hashes.
+  - Numbers are compared at 4 decimal places. Column order doesn't matter when the names match, and row order
+    is checked only when the task requires it.
+  - The **Check** tab shows the verdict, row counts, and sample rows that are missing or shouldn't be there.
+- **Schema refresh.** DDL (`CREATE`, `DROP`, …) refreshes the schema browser automatically.
+- **Memory limit.** DuckDB is capped at half your RAM by default (4 GB on an 8 GB Mac), so pandas and macOS
+  have room. You can change this in Database → Connection Settings.
+
 ## Troubleshooting (macOS)
 
 | Symptom | Cause | Fix |
@@ -152,7 +175,10 @@ senior-data-prep-studio/
 │   │   ├── providers.py             # Claude (SDK, streaming, structured output, caching) + Ollama
 │   │   ├── generator.py             # grounding, EXPLAIN verification, repair loop
 │   │   └── config.py                # provider settings; API key in the system keychain
-│   └── execution/                   # Phase 4
+│   └── execution/                   # Qt-free execution engine
+│       ├── engine.py                # Executor: SQL streaming, Python runner, cancel, memory sampler
+│       ├── check.py                 # answer checking (SQL in-database, Python DataFrames)
+│       └── sqltools.py              # statement splitter, dbt source() rendering
 └── tests/                           # UI smoke tests, data-integrity tests, Postgres tests
 ```
 
@@ -161,6 +187,7 @@ senior-data-prep-studio/
 | Key | Action |
 |---|---|
 | Ctrl+Enter / F5 | Run current script (or selection) |
+| Ctrl+Shift+Enter | Check your answer against the challenge |
 | Ctrl+Shift+L | Toggle SQL ↔ Python |
 | Ctrl+B | Show/hide schema browser |
 | F6 | Refresh schema |

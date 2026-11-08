@@ -15,8 +15,8 @@ from typing import Any
 
 from PyQt6.QtCore import QAbstractTableModel, QModelIndex, Qt
 from PyQt6.QtGui import QColor
-from PyQt6.QtWidgets import QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QLabel, \
-    QStackedLayout, QTableView, QVBoxLayout, QWidget
+from PyQt6.QtWidgets import QAbstractItemView, QFrame, QHBoxLayout, QHeaderView, QLabel, QPlainTextEdit, \
+    QStackedLayout, QTabWidget, QTableView, QTextBrowser, QVBoxLayout, QWidget
 
 from ..theme import C, monospace_font
 
@@ -43,6 +43,11 @@ class ResultsTableModel(QAbstractTableModel):
 
     def clear(self) -> None:
         self.set_data([], ())
+
+    def sync(self) -> None:
+        """Expose rows appended to the underlying (growing) list since the last call."""
+        if self._loaded < min(len(self._rows), self.FETCH_BATCH):
+            self.fetchMore()
 
     @property
     def total_rows(self) -> int:
@@ -101,6 +106,8 @@ def _format(value: Any) -> str:
         return f"{value:,.4f}".rstrip("0").rstrip(".")
     if isinstance(value, int):
         return f"{value:,}"
+    if isinstance(value, Decimal):
+        return f"{value:,}"
     if isinstance(value, dt.datetime):
         return value.isoformat(sep=" ", timespec="seconds")
     return str(value)
@@ -142,6 +149,8 @@ class SyntheticRows(Sequence):
 
 
 class ResultsPanel(QFrame):
+    """Tabs: Results (virtualised grid) · Output (messages / prints / errors) · Plan · Check."""
+
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
         self.setObjectName("Panel")
@@ -179,28 +188,123 @@ class ResultsPanel(QFrame):
         vh.setSectionResizeMode(QHeaderView.ResizeMode.Fixed)        # uniform rows = O(1) layout
         vh.setDefaultSectionSize(24)
 
-        self.empty_label = QLabel("Run a query to see results here.\n\nCtrl+Enter to execute · "
-                                  "View → Load Demo Grid to preview scrolling")
+        self.empty_label = QLabel("Run a query to see results here.\n\nCtrl+Enter runs your code · "
+                                  "Ctrl+Shift+Enter checks your answer")
         self.empty_label.setObjectName("Muted")
         self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-
-        self._stack = QStackedLayout()
+        grid_page = QWidget()
+        self._stack = QStackedLayout(grid_page)
         self._stack.addWidget(self.empty_label)
         self._stack.addWidget(self.table)
+
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setFont(monospace_font(10))
+        self.plan = QPlainTextEdit()
+        self.plan.setReadOnly(True)
+        self.plan.setFont(monospace_font(10))
+        self.plan.setLineWrapMode(QPlainTextEdit.LineWrapMode.NoWrap)
+        self.check = QTextBrowser()
+        self.check.document().setDocumentMargin(14)
+
+        self.tabs = QTabWidget()
+        self.tabs.setDocumentMode(True)
+        self.tabs.addTab(grid_page, "Results")
+        self.tabs.addTab(self.output, "Output")
+        self.tabs.addTab(self.plan, "Plan")
+        self.tabs.addTab(self.check, "Check")
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(1, 1, 1, 1)
         layout.setSpacing(0)
         layout.addLayout(header)
-        layout.addLayout(self._stack, 1)
+        layout.addWidget(self.tabs, 1)
+        self._truncated = False
 
-    def show_results(self, columns: Sequence[str], rows: Sequence[Sequence[Any]]) -> None:
+    # ---- grid ---------------------------------------------------------------------------------
+    def show_results(self, columns: Sequence[str], rows: Sequence[Sequence[Any]], truncated: bool = False) -> None:
         self.model.set_data(columns, rows)
         self.table.scrollToTop()
-        n = len(rows)
-        self.row_badge.setText(f"{n:,} row{'s' if n != 1 else ''}")
-        self.shape_label.setText(f"{len(columns)} columns · virtualised")
+        self._truncated = truncated
+        self.update_count()
         self._stack.setCurrentWidget(self.table if columns else self.empty_label)
+        if columns:
+            self.tabs.setCurrentIndex(0)
+
+    def update_count(self, streaming: bool = False) -> None:
+        self.model.sync()
+        n = self.model.total_rows
+        more = "+" if self._truncated else ("…" if streaming else "")
+        self.row_badge.setText(f"{n:,}{more} row{'s' if n != 1 else ''}")
+        cols = self.model.columnCount()
+        note = " · display limited to first 100,000 rows" if self._truncated else ""
+        self.shape_label.setText(f"{cols} columns{note}" if cols else "")
+
+    def set_truncated(self, truncated: bool) -> None:
+        self._truncated = truncated
+        self.update_count()
 
     def clear(self) -> None:
         self.show_results([], ())
+        self.output.clear()
+        self.plan.clear()
+        self.check.clear()
+
+    # ---- other tabs ---------------------------------------------------------------------------
+    def show_output(self, text: str, error: bool = False, focus: bool = False) -> None:
+        if error:
+            safe = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            self.output.appendHtml(f'<pre style="color:{C.danger}; margin:0">{safe}</pre>')
+        else:
+            self.output.appendPlainText(text)
+        if focus or error:
+            self.tabs.setCurrentWidget(self.output)
+
+    def show_plan(self, text: str) -> None:
+        self.plan.setPlainText(text)
+        self.tabs.setCurrentWidget(self.plan)
+
+    def show_check(self, html: str) -> None:
+        self.check.setHtml(html)
+        self.tabs.setCurrentWidget(self.check)
+
+    def show_check_result(self, res) -> None:
+        """Render a sdps.execution.CheckResult in the Check tab."""
+        self.show_check(render_check_html(res))
+
+
+def _esc(text: Any) -> str:
+    return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+
+def _sample_table(title: str, columns: list[str], rows: list[tuple], color: str) -> str:
+    if not rows:
+        return ""
+    cols = columns if columns and len(columns) == len(rows[0]) else [f"col {i + 1}" for i in range(len(rows[0]))]
+    head = "".join(f'<th align="left" style="padding:3px 10px;color:{C.text_muted}">{_esc(c)}</th>' for c in cols)
+    body = "".join("<tr>" + "".join(f'<td style="padding:2px 10px;font-family:monospace">{_esc(_format(v))}</td>'
+                                    for v in row) + "</tr>" for row in rows)
+    return (f'<p style="color:{color};margin:14px 0 4px 0"><b>{_esc(title)}</b></p>'
+            f'<table cellspacing="0" style="border:1px solid {C.border}">'
+            f'<tr style="background:{C.surface_alt}">{head}</tr>{body}</table>')
+
+
+def render_check_html(res) -> str:
+    color = C.success if res.passed else C.warning
+    icon = "✓" if res.passed else "✗"
+    parts = [f'<p style="font-size:15pt;color:{color};margin:0 0 6px 0"><b>{icon} {_esc(res.headline)}</b></p>']
+    if res.expected_rows or res.user_rows:
+        parts.append(f'<p style="color:{C.text_muted};margin:0 0 8px 0">Your rows: {res.user_rows:,} · '
+                     f'expected: {res.expected_rows:,}'
+                     + (f" · checked in {res.elapsed_ms / 1000:.1f}s" if res.elapsed_ms else "") + "</p>")
+    if res.details:
+        parts.append("<ul style='margin-top:4px'>" + "".join(f"<li>{_esc(d)}</li>" for d in res.details) + "</ul>")
+    parts.append(_sample_table("Expected rows missing from your answer (sample)", res.columns, res.missing, C.warning))
+    parts.append(_sample_table("Rows in your answer that shouldn't be there (sample)", res.columns, res.unexpected,
+                               C.danger))
+    if not res.passed and not res.missing and not res.unexpected and not res.details:
+        parts.append(f"<p style='color:{C.text_muted}'>Compare your output with the task requirements.</p>")
+    if not res.passed:
+        parts.append(f"<p style='color:{C.text_muted};margin-top:12px'>Numbers are compared at 4 decimal places. "
+                     "Use Hint or Show Solution in the challenge panel if you're stuck.</p>")
+    return "".join(parts)

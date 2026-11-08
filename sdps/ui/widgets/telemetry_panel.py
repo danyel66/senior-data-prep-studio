@@ -29,6 +29,8 @@ class ExecutionMetrics:
     columns: int
     peak_memory_mb: float | None = None
     status: str = "OK"
+    memory_delta_mb: float | None = None
+    truncated: bool = False
 
 
 class MetricCard(QFrame):
@@ -68,7 +70,7 @@ class TelemetryPanel(QFrame):
         self.status_card = MetricCard("Status", "Idle")
         self.time_card = MetricCard("Execution time")
         self.rows_card = MetricCard("Rows returned")
-        self.mem_card = MetricCard("Peak memory")
+        self.mem_card = MetricCard("Peak memory (+ used by run)")
         cards = QGridLayout()
         cards.setContentsMargins(12, 0, 12, 8)
         cards.setSpacing(8)
@@ -100,11 +102,21 @@ class TelemetryPanel(QFrame):
         self.mem_card.set_value("—")
 
     def show_metrics(self, m: ExecutionMetrics) -> None:
-        ok = m.status == "OK"
-        self.status_card.set_value(m.status, C.success if ok else C.danger)
+        color = {"OK": C.success, "Correct": C.success, "Cancelled": C.warning, "Not quite": C.warning}.get(m.status, C.danger)
+        self.status_card.set_value(m.status, color)
         self.time_card.set_value(_fmt_duration(m.elapsed_ms))
-        self.rows_card.set_value(f"{m.rows:,}")
-        self.mem_card.set_value("n/a" if m.peak_memory_mb is None else f"{m.peak_memory_mb:,.1f} MB")
+        self.rows_card.set_value(f"{m.rows:,}" + ("+" if m.truncated else ""))
+        if m.peak_memory_mb is None:
+            self.mem_card.set_value("n/a")
+        else:
+            delta = "" if m.memory_delta_mb is None else f"  (+{m.memory_delta_mb:,.0f})"
+            self.mem_card.set_value(f"{m.peak_memory_mb:,.0f} MB{delta}")
+
+    def show_live(self, elapsed_ms: float, rows: int, rss_mb: float | None) -> None:
+        self.time_card.set_value(_fmt_duration(elapsed_ms) + "…")
+        self.rows_card.set_value(f"{rows:,}…" if rows else "—")
+        if rss_mb is not None:
+            self.mem_card.set_value(f"{rss_mb:,.0f} MB…")
 
     def append_log(self, message: str, level: str = "INFO") -> None:
         color = {"INFO": C.text_muted, "OK": C.success, "WARN": C.warning, "ERROR": C.danger}.get(level, C.text)
