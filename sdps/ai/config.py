@@ -32,7 +32,8 @@ class AIConfig:
     claude_effort: str = "medium"
     ollama_url: str = "http://localhost:11434"
     ollama_model: str = ""
-    ollama_num_ctx: int = 16384
+    ollama_num_ctx: int = 12288          # prompt ≈ 7K tokens + answer ≈ 3K; smaller = less RAM
+    ollama_unload_after: bool = True     # free the model's RAM as soon as a challenge is done
 
     @property
     def model(self) -> str:
@@ -60,6 +61,8 @@ class AIConfig:
             cfg.provider = "claude"
         if cfg.claude_effort not in EFFORT_LEVELS:
             cfg.claude_effort = "medium"
+        if cfg.ollama_num_ctx == 16384:          # the pre-0.4.1 default: move to the leaner one
+            cfg.ollama_num_ctx = 12288
         return cfg
 
     def save(self) -> None:

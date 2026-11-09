@@ -4,7 +4,7 @@ from __future__ import annotations
 import dataclasses
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import QButtonGroup, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout, \
+from PyQt6.QtWidgets import QButtonGroup, QCheckBox, QComboBox, QDialog, QDialogButtonBox, QFormLayout, QFrame, QHBoxLayout, \
     QLabel, QLineEdit, QPushButton, QRadioButton, QSpinBox, QStackedWidget, QVBoxLayout, QWidget
 
 from ...ai.config import CLAUDE_MODELS, EFFORT_LEVELS, RECOMMENDED_OLLAMA_MODELS, AIConfig, \
@@ -95,6 +95,10 @@ class AISettingsDialog(QDialog):
         self.ctx_spin.setSingleStep(4096)
         self.ctx_spin.setValue(config.ollama_num_ctx)
         self.ctx_spin.setSuffix(" tokens")
+        self.unload_check = QCheckBox("Free the model's memory after each challenge (recommended on 8–16 GB Macs)")
+        self.unload_check.setChecked(config.ollama_unload_after)
+        self.unload_check.setToolTip("A 7B model holds about 5 GB of RAM while loaded. Freeing it keeps your Mac "
+                                     "responsive; the next challenge takes 5–15 s longer to start.")
         tip = QLabel(f"Recommended: <b>{RECOMMENDED_OLLAMA_MODELS[0]}</b> (needs ~10 GB RAM) or "
                      f"<b>{RECOMMENDED_OLLAMA_MODELS[1]}</b> for smaller machines. Install with "
                      f"<code>ollama pull {RECOMMENDED_OLLAMA_MODELS[0]}</code>. The schema prompt needs a "
@@ -105,6 +109,7 @@ class AISettingsDialog(QDialog):
         oform.addRow("Server URL", self.url_edit)
         oform.addRow("Model", model_row)
         oform.addRow("Context size", self.ctx_spin)
+        oform.addRow("", self.unload_check)
         oform.addRow("", tip)
 
         self.stack = QStackedWidget()
@@ -154,7 +159,8 @@ class AISettingsDialog(QDialog):
             provider="ollama" if self.ollama_radio.isChecked() else "claude",
             claude_model=self.model_combo.currentData(), claude_effort=self.effort_combo.currentText(),
             ollama_url=self.url_edit.text().strip() or "http://localhost:11434",
-            ollama_model=self.ollama_model.currentText().strip(), ollama_num_ctx=self.ctx_spin.value())
+            ollama_model=self.ollama_model.currentText().strip(), ollama_num_ctx=self.ctx_spin.value(),
+            ollama_unload_after=self.unload_check.isChecked())
 
     def _save(self) -> None:
         typed = self.key_edit.text().strip()

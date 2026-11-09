@@ -202,6 +202,8 @@ class OllamaProvider(Provider):
             "model": model, "stream": True, "format": schema,
             "messages": [{"role": "system", "content": system}, {"role": "user", "content": user}],
             "options": {"temperature": 0.6, "num_ctx": int(self.config.ollama_num_ctx)},
+            # 0 = unload right after answering (frees ~5 GB for a 7B model); otherwise keep 5 minutes
+            "keep_alive": 0 if self.config.ollama_unload_after else "5m",
         }).encode()
         req = urllib.request.Request(f"{self.base}/api/chat", data=body, headers={"Content-Type": "application/json"})
         progress(f"Loading {model} in Ollama… (the first run can take a while)")

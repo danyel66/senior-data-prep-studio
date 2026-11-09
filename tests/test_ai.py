@@ -323,3 +323,31 @@ def test_window_saved_off_screen_is_pulled_back(qapp, tiny_config):
     area = QGuiApplication.primaryScreen().availableGeometry()
     assert area.intersects(w.frameGeometry())
     w.close()
+
+
+# ───────────────────────────────────────── 0.4.1: memory ─────────────────────────────────────────
+def test_ollama_unloads_model_by_default(fake_ollama):
+    cfg = AIConfig(provider="ollama", ollama_url=fake_ollama.url, ollama_model="qwen2.5-coder:14b")
+    assert cfg.ollama_num_ctx == 12288 and cfg.ollama_unload_after
+    OllamaProvider(cfg).complete("S", "U", {}, lambda m: None, threading.Event())
+    assert fake_ollama.requests[-1]["body"]["keep_alive"] == 0
+    cfg.ollama_unload_after = False
+    OllamaProvider(cfg).complete("S", "U", {}, lambda m: None, threading.Event())
+    assert fake_ollama.requests[-1]["body"]["keep_alive"] == "5m"
+
+
+def test_old_default_context_size_is_migrated():
+    old = AIConfig(provider="ollama", ollama_num_ctx=16384)
+    old.save()
+    assert AIConfig.load().ollama_num_ctx == 12288
+    custom = AIConfig(provider="ollama", ollama_num_ctx=24576)
+    custom.save()
+    assert AIConfig.load().ollama_num_ctx == 24576
+    AIConfig().save()
+
+
+def test_memory_pressure_label(qapp):
+    from sdps.ui.widgets.telemetry_panel import TelemetryPanel
+    t = TelemetryPanel()
+    t._refresh_live_memory()
+    assert "app:" in t.live_mem_label.text() and "Mac memory" in t.live_mem_label.text()

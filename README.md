@@ -135,6 +135,7 @@ Execution contracts that Phase 4 will run:
 | `Could not find the Qt platform plugin "cocoa"` (comes and goes) | The virtual environment is in an iCloud-synced folder (`~/Documents`, `~/Desktop`), and iCloud evicts library files | Create the environment outside synced folders: `python3.12 -m venv ~/.venvs/sdps` |
 | `No matching distribution found for anthropic` | Python 3.9 (macOS built-in) is too old | Install Python 3.12 (`brew install python@3.12`) and recreate the environment |
 | "Database file is in use by another program" | Another copy of the app, or a tool like DBeaver, has the DuckDB file open | Quit it, or `kill <PID>` using the process number shown in the message |
+| The Mac slows down while using Ollama | The model holds ~5 GB of RAM (a 7B model) on an 8 GB Mac | Since v0.4.1 the model is unloaded after each challenge (AI Settings → "Free the model's memory"). Watch "Mac memory % used" in the telemetry panel |
 | The app runs but no window is visible | A window position saved with a different display arrangement | Fixed automatically since v0.3.1; otherwise use Mission Control |
 
 The app checks the first three at startup and prints the fix instead of crashing.

@@ -5,7 +5,7 @@ import datetime as dt
 import os
 from dataclasses import dataclass
 
-from PyQt6.QtCore import QTimer
+from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPlainTextEdit, QVBoxLayout, \
     QWidget
 
@@ -60,6 +60,7 @@ class TelemetryPanel(QFrame):
         title = QLabel("Execution Telemetry")
         title.setObjectName("PanelTitle")
         self.live_mem_label = QLabel()
+        self.live_mem_label.setTextFormat(Qt.TextFormat.RichText)
         self.live_mem_label.setObjectName("Muted")
         header = QHBoxLayout()
         header.setContentsMargins(12, 10, 12, 6)
@@ -129,7 +130,17 @@ class TelemetryPanel(QFrame):
 
     def _refresh_live_memory(self) -> None:
         rss = process_rss_mb()
-        self.live_mem_label.setText("process RSS: n/a" if rss is None else f"process RSS: {rss:,.0f} MB")
+        app = "app: n/a" if rss is None else f"app: {rss:,.0f} MB"
+        try:
+            import psutil
+            vm = psutil.virtual_memory()
+            used = vm.percent
+            color = C.danger if used >= 90 else C.warning if used >= 80 else C.text_muted
+            tip = "" if used < 80 else " — close other apps or a loaded AI model"
+            self.live_mem_label.setText(f'{app} · <span style="color:{color}">Mac memory {used:.0f}% used{tip}</span>')
+            self.live_mem_label.setToolTip(f"{vm.available / 2**30:.1f} GB of {vm.total / 2**30:.0f} GB available")
+        except Exception:
+            self.live_mem_label.setText(app)
 
 
 def _fmt_duration(ms: float) -> str:
