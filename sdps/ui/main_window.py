@@ -20,7 +20,8 @@ from ..ai import AICancelled, AIConfig, AIError, Challenge, ChallengeGenerator, 
     GenerationResult, OllamaProvider, claude_credentials_hint
 from ..db import ConnectionManager, ConnectionStatus, DatabaseConfig, DatabaseError, TableInfo
 from ..execution import ExecutionCancelled, ExecutionError, Executor, check_python, check_sql
-from .dialogs import AISettingsDialog, DatabaseSettingsDialog, SeedDialog
+from ..progress import SOLVED, ProgressStore
+from .dialogs import AISettingsDialog, DatabaseSettingsDialog, ProgressDialog, SeedDialog
 from .theme import C
 from .widgets import EditorPanel, PromptPanel, ResultsPanel, TelemetryPanel
 from .widgets.results_panel import SyntheticRows
@@ -57,6 +58,13 @@ class MainWindow(QMainWindow):
         self._bridge = _RunBridge(self)
         self._bridge.columns_ready.connect(self.results_panel_columns_ready)
         self._live_timer = QTimer(self, interval=200, timeout=self._update_live_telemetry)
+        self.progress_store = ProgressStore()
+        self._run_context: tuple | None = None
+        self._loading_editor = False
+        self._last_activity = time.monotonic()
+        self._draft_timer = QTimer(self, singleShot=True, interval=1_200, timeout=self._save_draft)
+        self._activity_timer = QTimer(self, interval=15_000, timeout=self._count_active_time)
+        self._activity_timer.start()
 
         self.schema_browser = SchemaBrowser()
         self.prompt_panel = PromptPanel()
@@ -73,7 +81,7 @@ class MainWindow(QMainWindow):
         self.telemetry_panel.append_log(f"{APP_NAME} v{__version__} started", "OK")
         self._apply_ai_config()
         if recent := self.challenges.all():
-            self.prompt_panel.show_challenge(recent[0])
+            self._activate_challenge(recent[0])
         self._sync_checkable()
         if auto_connect:
             QTimer.singleShot(0, self.connect_database)
@@ -126,6 +134,9 @@ class MainWindow(QMainWindow):
         self.act_hint = action("Reveal Next Hint", self.prompt_panel.next_hint, "Ctrl+Shift+H")
         self.act_solution = action("Show Solution", self.prompt_panel.show_solution, "Ctrl+Shift+S")
         self.act_insert_solution = action("Insert Solution into Editor", self._insert_solution)
+        self.act_progress = action("My Progress…", self.open_progress, "Ctrl+Shift+P",
+                                   "Solved challenges, time spent and weakest topics")
+        self.act_reset_code = action("Reset My Code to Starter", self._reset_code)
         self.act_ai_settings = action("AI Settings…", self.open_ai_settings, None,
                                       "Choose Claude or Ollama and set your API key")
         self.act_demo = action("Load Demo Grid (1M rows)", self._load_demo_dataset, "Ctrl+D",
@@ -154,7 +165,10 @@ class MainWindow(QMainWindow):
         m_db.addSeparator()
         m_db.addActions([self.act_refresh_schema, self.act_reconnect, self.act_disconnect])
         m_challenge = mb.addMenu("&Challenge")
-        m_challenge.addActions([self.act_new_challenge, self.act_hint, self.act_solution, self.act_insert_solution])
+        m_challenge.addActions([self.act_new_challenge, self.act_hint, self.act_solution, self.act_insert_solution,
+                                self.act_reset_code])
+        m_challenge.addSeparator()
+        m_challenge.addAction(self.act_progress)
         self.recent_menu = m_challenge.addMenu("Recent Challenges")
         self.recent_menu.aboutToShow.connect(self._fill_recent_menu)
         m_challenge.addSeparator()
@@ -179,7 +193,9 @@ class MainWindow(QMainWindow):
         self.act_db_settings_tb = QAction("Database…", self, triggered=self.open_database_settings)
         self.act_seed_tb = QAction("Generate Data…", self, triggered=self.open_seed_dialog)
         self.act_ai_settings_tb = QAction("AI Settings…", self, triggered=self.open_ai_settings)
-        tb.addActions([self.act_db_settings_tb, self.act_seed_tb, self.act_ai_settings_tb, self.act_clear])
+        self.act_progress_tb = QAction("Progress", self, triggered=self.open_progress)
+        tb.addActions([self.act_progress_tb, self.act_db_settings_tb, self.act_seed_tb, self.act_ai_settings_tb,
+                       self.act_clear])
         self.addToolBar(tb)
 
     def _build_status_bar(self) -> None:
@@ -208,6 +224,9 @@ class MainWindow(QMainWindow):
         self.prompt_panel.cancel_requested.connect(self.cancel_challenge)
         self.prompt_panel.insert_solution_requested.connect(self._insert_solution)
         self.prompt_panel.settings_requested.connect(self.open_ai_settings)
+        self.prompt_panel.hint_revealed.connect(self._on_hint_revealed)
+        self.prompt_panel.solution_revealed.connect(self._on_solution_revealed)
+        self.editor_panel.editor.textChanged.connect(self._on_editor_changed)
         self.schema_browser.insert_requested.connect(self._insert_into_editor)
         self.schema_browser.refresh_requested.connect(self.refresh_schema)
         self.schema_browser.seed_requested.connect(self.open_seed_dialog)
@@ -425,9 +444,7 @@ class MainWindow(QMainWindow):
         assert isinstance(result, GenerationResult)
         ch = result.challenge
         self.challenges.add(ch)
-        self.prompt_panel.show_challenge(ch)
-        self._sync_checkable()
-        self.editor_panel.load_text(ch.language, ch.editor_starter())
+        self._activate_challenge(ch)
         cost = "" if result.cost_usd is None else f" · ${result.cost_usd:.4f}"
         verdict = "verified" if ch.verified else "NOT verified: " + "; ".join(ch.verification_notes)
         self.telemetry_panel.append_log(
@@ -449,15 +466,93 @@ class MainWindow(QMainWindow):
         items = self.challenges.all()[:20]
         if not items:
             self.recent_menu.addAction("No challenges yet").setEnabled(False)
+        statuses = self.progress_store.statuses([c.id for c in items])
         for ch in items:
-            mark = "✓" if ch.verified else "⚠"
+            mark = statuses[ch.id].icon
             act = self.recent_menu.addAction(f"{mark}  {ch.title}  ·  {ch.category} · {ch.difficulty}")
             act.triggered.connect(lambda _=False, c=ch: self._open_challenge(c))
 
     def _open_challenge(self, ch: Challenge) -> None:
-        self.prompt_panel.show_challenge(ch)
+        self._activate_challenge(ch)
+
+    # ---- progress & drafts ---------------------------------------------------------------
+    def _activate_challenge(self, ch: Challenge) -> None:
+        """Show a challenge with its saved state: revealed hints, solution flag and your saved code."""
+        self._save_draft()                                    # keep the code of the challenge we leave
+        st = self.progress_store.status(ch.id)
+        self.prompt_panel.show_challenge(ch, st.hints_used, st.solution_viewed)
         self._sync_checkable()
-        self.editor_panel.load_text(ch.language, ch.editor_starter())
+        draft = self.progress_store.get_draft(ch.id)
+        code = draft[1] if draft and draft[0] == ch.language else ch.editor_starter()
+        self._load_editor(ch.language, code)
+        self.progress_store.mark_opened(ch.id)
+        self._update_progress_badge()
+
+    def _load_editor(self, language: str, code: str) -> None:
+        self._loading_editor = True
+        try:
+            self.editor_panel.load_text(language, code)
+        finally:
+            self._loading_editor = False
+
+    def _on_editor_changed(self) -> None:
+        self._last_activity = time.monotonic()
+        if not self._loading_editor and self.prompt_panel.challenge is not None:
+            self._draft_timer.start()
+
+    def _save_draft(self) -> None:
+        self._draft_timer.stop()
+        ch = self.prompt_panel.challenge
+        if ch is None or self.editor_panel.language.value != ch.language:
+            return
+        code = self.editor_panel.editor.toPlainText()
+        if code.strip() and code != ch.editor_starter():
+            self.progress_store.save_draft(ch.id, ch.language, code)
+
+    def _reset_code(self) -> None:
+        ch = self.prompt_panel.challenge
+        if ch is None:
+            return
+        self.progress_store.delete_draft(ch.id)
+        self._load_editor(ch.language, ch.editor_starter())
+        self.statusBar().showMessage("Editor reset to the starter (Ctrl+Z to undo)", 4_000)
+
+    def _on_hint_revealed(self, n: int) -> None:
+        if ch := self.prompt_panel.challenge:
+            self.progress_store.mark_hints(ch.id, n)
+            self._last_activity = time.monotonic()
+            self._update_progress_badge()
+
+    def _on_solution_revealed(self) -> None:
+        if ch := self.prompt_panel.challenge:
+            self.progress_store.mark_solution_viewed(ch.id)
+            self._update_progress_badge()
+
+    def _update_progress_badge(self) -> None:
+        if ch := self.prompt_panel.challenge:
+            st = self.progress_store.status(ch.id)
+            checks = f" · {st.attempts} check{'s' if st.attempts != 1 else ''}" if st.attempts else ""
+            self.prompt_panel.set_progress(st.icon, st.label + checks, st.state == SOLVED)
+
+    def _count_active_time(self) -> None:
+        """Every 15 s: count it as practice if a challenge is open, the window is active and you did
+        something in the last 3 minutes (so leaving the app open doesn't inflate your time)."""
+        ch = self.prompt_panel.challenge
+        if ch is not None and self.isActiveWindow() and time.monotonic() - self._last_activity < 180:
+            self.progress_store.add_time(ch.id, 15)
+
+    def open_progress(self) -> None:
+        self._save_draft()
+        dlg = ProgressDialog(self.progress_store, self.challenges.all(), self)
+        dlg.open_challenge.connect(lambda cid: (c := self.challenges.get(cid)) and self._activate_challenge(c))
+        dlg.practise_topic.connect(self._practise_topic)
+        dlg.exec()
+
+    def _practise_topic(self, category: str, topic: str) -> None:
+        panel = self.prompt_panel
+        panel.category_combo.setCurrentText(category)
+        panel.topic_combo.setCurrentText(topic or "Any topic")
+        panel.set_status(f"Ready to practise “{topic or category}”: click New Challenge.")
 
     # ---- editor / run stubs ---------------------------------------------------------------
     def _insert_into_editor(self, text: str) -> None:
@@ -498,6 +593,8 @@ class MainWindow(QMainWindow):
                 return
         executor = Executor(self.db)
         self._executor = executor
+        self._last_activity = time.monotonic()
+        self._run_context = (challenge, language, code) if check else None
         rp.clear()
         self.editor_panel.set_running(True)
         self.telemetry_panel.mark_running()
@@ -579,6 +676,14 @@ class MainWindow(QMainWindow):
                       f"{run.elapsed_ms:,.0f} ms{mem}", "OK")
         if verdict is not None:
             tp.append_log(("✓ " if verdict.passed else "✗ ") + verdict.headline, "OK" if verdict.passed else "WARN")
+            if self._run_context and self._run_context[0] is not None:
+                ch, language, code = self._run_context
+                first_solve = verdict.passed and self.progress_store.status(ch.id).state != SOLVED
+                self.progress_store.record_attempt(ch.id, language, code, verdict.passed, verdict.headline,
+                                                   verdict.user_rows, verdict.expected_rows, run.elapsed_ms)
+                self._update_progress_badge()
+                if first_solve:
+                    self.statusBar().showMessage(f"Solved “{ch.title}”! See Challenge → My Progress.", 6_000)
         if run.schema_changed:
             self.refresh_schema()
 
@@ -645,6 +750,7 @@ class MainWindow(QMainWindow):
         self._settings.setValue("window/geometry", self.saveGeometry())
         for name in self._SPLITTERS:
             self._settings.setValue(f"{_LAYOUT_KEY}/{name}", getattr(self, name).saveState())
+        self._save_draft()
         if self._generator is not None:
             self._generator.cancel()
         if self._executor is not None:

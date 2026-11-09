@@ -30,6 +30,8 @@ class PromptPanel(QFrame):
     cancel_requested = pyqtSignal()
     insert_solution_requested = pyqtSignal()
     settings_requested = pyqtSignal()
+    hint_revealed = pyqtSignal(int)          # number of hints now visible
+    solution_revealed = pyqtSignal()
 
     def __init__(self, parent: QWidget | None = None):
         super().__init__(parent)
@@ -90,6 +92,9 @@ class PromptPanel(QFrame):
         self.insert_button = QPushButton("Insert Solution")
         self.insert_button.setToolTip("Put the reference solution in the editor (undo with Ctrl+Z)")
         self.insert_button.clicked.connect(self.insert_solution_requested)
+        self.progress_label = QLabel()
+        self.progress_label.setObjectName("Badge")
+        self.progress_label.hide()
         self.meta = QLabel()
         self.meta.setObjectName("Muted")
         self.meta.setTextFormat(Qt.TextFormat.RichText)
@@ -99,6 +104,7 @@ class PromptPanel(QFrame):
         footer.addWidget(self.solution_button)
         footer.addWidget(self.insert_button)
         footer.addStretch()
+        footer.addWidget(self.progress_label)
         footer.addWidget(self.meta)
         self.footer = QWidget()
         self.footer.setLayout(footer)
@@ -148,13 +154,18 @@ class PromptPanel(QFrame):
         self.status.setText(f'<span style="color:{C.danger}">✗  {safe}</span>{link}')
         self.status.show()
 
+    def set_progress(self, icon: str, label: str, solved: bool) -> None:
+        self.progress_label.setText(f"{icon}  {label}")
+        self.progress_label.setStyleSheet(f"color: {C.success};" if solved else "")
+        self.progress_label.setVisible(self.challenge is not None)
+
     def clear_status(self) -> None:
         self.status.hide()
 
-    def show_challenge(self, challenge: Challenge) -> None:
+    def show_challenge(self, challenge: Challenge, hints_revealed: int = 0, solution_shown: bool = False) -> None:
         self.challenge = challenge
-        self.hints_revealed = 0
-        self.solution_shown = False
+        self.hints_revealed = min(hints_revealed, len(challenge.hints))
+        self.solution_shown = solution_shown
         self.clear_status()
         for combo, value in ((self.category_combo, challenge.category), (self.difficulty_combo, challenge.difficulty)):
             i = combo.findText(value)
@@ -175,12 +186,14 @@ class PromptPanel(QFrame):
         if self.challenge and self.hints_revealed < len(self.challenge.hints):
             self.hints_revealed += 1
             self._render(scroll_to_end=True)
+            self.hint_revealed.emit(self.hints_revealed)
 
     def show_solution(self) -> None:
         if self.challenge and not self.solution_shown:
             self.solution_shown = True
             self.hints_revealed = len(self.challenge.hints)
             self._render(scroll_to_end=True)
+            self.solution_revealed.emit()
 
     # ---- internals ------------------------------------------------------------------------
     def _on_generate_clicked(self) -> None:

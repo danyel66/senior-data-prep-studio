@@ -11,8 +11,26 @@ against production-scale data.
 | 2 | DB connection manager + AdventureWorks generator (DuckDB default, Postgres optional) | ✅ done |
 | 3 | AI "Senior Principal Data Architect" challenge generator (Claude or Ollama) | ✅ done |
 | 4 | Async SQL/Python execution, live telemetry, answer checking | ✅ done |
+| 5 | Extras: Mac app, progress tracking, saved solutions | ✅ done |
 
-## Run
+## Install as a Mac app (no terminal needed)
+
+Run this once, with your environment active:
+
+```bash
+bash scripts/install_mac_app.sh
+```
+
+It creates **Senior Data Prep Studio.app** in `~/Applications`, with its own icon. Open it from Spotlight
+(Cmd+Space) or Launchpad. While it's running, right-click its Dock icon → Options → **Keep in Dock**.
+
+The app launches this project with your Python environment (`~/.venvs/sdps` by default), so `git pull`
+updates take effect the next time you open it, with nothing to rebuild. Output goes to
+`~/Library/Logs/SeniorDataPrepStudio/app.log`. If the project folder or the environment moves, macOS shows an
+alert that says so; run the script again from the new location. To remove the app, delete it from
+`~/Applications`.
+
+## Run from the terminal
 
 ```bash
 python -m venv .venv && source .venv/bin/activate     # Windows: .venv\Scripts\activate
@@ -104,6 +122,21 @@ Execution contracts that Phase 4 will run:
 | Advanced SQL | One read-only `SELECT` / `WITH` query |
 | Python / Pandas | A script using `pd`, `np` and `sql(query) -> DataFrame` that assigns its answer to `result` |
 | Analytics Engineering / dbt | One model `SELECT` using `{{ source('schema', 'table') }}`, plus YAML or macros as artifacts |
+
+## Progress and saved solutions
+
+- **Your code is saved per challenge as you type.** Reopening a challenge (from Recent Challenges or the
+  Progress window) restores your code, the hints you'd revealed, and whether you viewed the solution.
+  Challenge → **Reset My Code to Starter** starts over, and Ctrl+Z undoes the reset.
+- **Every Check is recorded.** A challenge's status is shown in the panel: ○ not started, ◐ in progress,
+  ✓ solved, ★ solved with no hints and without viewing the solution.
+- **Active practice time** is counted only while the app is in front and you've done something in the last
+  3 minutes.
+- **Progress** (toolbar, or Ctrl+Shift+P) shows totals, every challenge, results by category and difficulty, and
+  your **weakest topics**. A topic is weaker when it has unsolved challenges, viewed solutions, or needed many
+  checks. **Practise selected topic** sets up the challenge pickers for it.
+- History is stored in `progress.sqlite` in the app data folder, separate from the practice database, so
+  regenerating AdventureWorks never erases it.
 
 ## Running and checking your code
 
@@ -197,6 +230,7 @@ senior-data-prep-studio/
 | Ctrl+G | New AI challenge |
 | Ctrl+Shift+H | Reveal next hint |
 | Ctrl+Shift+S | Show solution |
+| Ctrl+Shift+P | My Progress |
 | Ctrl+D | Load 1M-row demo grid |
 | Ctrl+L | Clear results |
 

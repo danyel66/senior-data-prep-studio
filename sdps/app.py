@@ -5,15 +5,16 @@ import sys
 from pathlib import Path
 
 from PyQt6.QtCore import QLibraryInfo, QLockFile, Qt
-from PyQt6.QtGui import QGuiApplication
+from PyQt6.QtGui import QGuiApplication, QIcon
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
-from . import APP_NAME, ORG_NAME, __version__
+from . import APP_NAME, ORG_NAME, __version__, macos
 from .db.config import app_data_dir
 from .ui.main_window import MainWindow
 from .ui.theme import apply_dark_theme
 
 _PLATFORM_PLUGIN = {"darwin": "libqcocoa.dylib", "win32": "qwindows.dll"}
+ICON = Path(__file__).resolve().parent.parent / "assets" / "icon.png"
 
 
 def _cloud_synced(path: Path) -> str | None:
@@ -57,8 +58,13 @@ def preflight() -> str | None:
 def create_app(argv: list[str] | None = None) -> QApplication:
     QGuiApplication.setHighDpiScaleFactorRoundingPolicy(
         Qt.HighDpiScaleFactorRoundingPolicy.PassThrough)
+    if QApplication.instance() is None:
+        macos.set_app_name(APP_NAME)          # menu bar title on macOS (must precede QApplication)
     app = QApplication.instance() or QApplication(argv if argv is not None else sys.argv)
     app.setApplicationName(APP_NAME)
+    app.setApplicationDisplayName(APP_NAME)
+    if ICON.is_file():
+        app.setWindowIcon(QIcon(str(ICON)))   # also the Dock icon on macOS
     app.setOrganizationName(ORG_NAME)
     app.setApplicationVersion(__version__)
     apply_dark_theme(app)
@@ -68,6 +74,8 @@ def create_app(argv: list[str] | None = None) -> QApplication:
 def main() -> int:
     if problem := preflight():
         sys.stderr.write(f"\n{APP_NAME} can't start.\n\n{problem}\n\n")
+        if macos.launched_from_app():         # no terminal to read: show it
+            macos.alert(f"{APP_NAME} can't start", problem)
         return 1
     app = create_app()
 
